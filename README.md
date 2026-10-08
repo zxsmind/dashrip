@@ -1,124 +1,104 @@
 # dashrip
 
-Rip DRM-protected (Widevine) streaming video to local MKV files — with
-audio tracks, subtitles, posters, and a standard media-library layout.
+Rip DRM-protected (Widevine) streaming video from HBO Max and Amazon Prime
+Video into local MKV files. Pick the audio and subtitle tracks you want, add
+posters, and file everything into a standard media library layout.
 
-**Supported platforms:** HBO Max · Amazon Prime Video
+## Legal
 
----
+dashrip decrypts content delivered under a DRM license and a service
+agreement. Using it may breach a streaming service's terms of service, and
+circumventing technological protection measures is restricted by law in some
+jurisdictions.
 
-## ⚖️ Legal notice — read this first
-
-dashrip decrypts content that is delivered under a DRM license and a
-service agreement. Using this software may violate the terms of service of
-the streaming services involved, and in some jurisdictions the
-circumvention of technological protection measures may be restricted by
-law.
-
-- **Use this software only with content you are entitled to access** (e.g.
-  your own subscription, while it is active).
-- **You are solely responsible** for how you use this software and for any
-  consequences that follow, including account actions by the service
-  provider.
-- The authors provide dashrip **for educational purposes and as a tool for
-  interoperability with your own licensed content**. No warranty of any
-  kind is given. By using it you accept full responsibility.
+- Use it only with content you are entitled to access, such as your own
+  active subscription.
+- You are solely responsible for your use and any consequences, including
+  action against your account by the service.
+- It is provided for educational purposes and for interoperability with your
+  own licensed content. No warranty of any kind.
 
 If you are unsure whether your use is legal where you live, ask a lawyer.
 
----
-
 ## What it does
 
-`dashrip` automates the full pipeline that used to be several manual
-tools:
+One command runs the whole pipeline: resolve the title, fetch the DASH
+manifest, request the Widevine license, download the media, decrypt it, remux
+to MKV, and file it into your library.
 
-```
-resolve content → fetch manifest (DASH MPD) → Widevine license (L3/L1 CDM)
-→ download media segments → decrypt (shaka-packager) → remux to MKV
-→ file into a standard library layout → record in a JSON manifest
-```
+- Audio and subtitle selection based on the tracks that actually exist for
+  that item. Nothing is hard-coded.
+- A standard library layout (Jellyfin/Plex style):
 
-Features:
-
-- **Dynamic track detection** — the actual audio dubs and subtitle tracks
-  that exist for *that specific item* are read from the manifest and
-  offered for selection (nothing is hard-coded).
-- **Standard library layout**
-  (Jellyfin/Plex-style):
   ```
   <out>/Movies/<Title> (<Year>)/<Title>.720p.mkv
   <out>/Series/<Show>/Season NN/Episode NN - <EpTitle>/SxxEyy - <EpTitle>.720p.mkv
   <out>/Series/<Show>/poster.jpg
   ```
-- **Posters** — portrait show cards (with title) and per-episode artwork,
-  pulled from the platform's own CMS.
-- **Manifest** — every delivered file is recorded with path, size,
-  SHA-256, duration, tracks, and date (`dashrip_manifest.json`).
-- **Batch mode** — many titles in one run; resume-capable downloads.
-- **Human-optional pacing** — no aggressive parallelism by default;
-  optional speed cap.
-- **`doctor`** — a green/red health check of the entire stack before you
-  start.
-- **`sync`** — a lossless, resumable, SHA-256-verified folder transfer
-  helper (useful for moving a finished library to a server/NAS).
+
+- Show posters and per-episode artwork from the platform's own CMS.
+- A JSON manifest recording each delivered file: path, size, SHA-256,
+  duration, tracks, date.
+- Batch mode with resumable downloads.
+- `doctor`: a health check of the whole stack before you start.
+- `sync`: a resumable, SHA-256-verified folder transfer for moving a finished
+  library to a server or NAS.
 
 ## Requirements
 
-| Component | Why |
-|---|---|
-| Python 3.10+ | the code |
-| `pywidevine`, `requests` | Widevine device handling, HTTP (`pip install -r requirements.txt`) |
-| `ffmpeg` / `ffprobe` | muxing, verification |
-| `shaka-packager` | CENC/CEA-708 decryption into MKV |
-| A **Widevine device file** (`.wvd`) | the CDM key material — see below |
-| A valid session **cookie** | your account's session token |
-| An exported **HAR** from your browser | the playback request template (once) |
+- Python 3.10+
+- `pywidevine`, `requests` (`pip install -r requirements.txt`)
+- `ffmpeg` / `ffprobe`
+- `shaka-packager`
+- A Widevine device file (`.wvd`), see below
+- A valid session cookie
+- One HAR capture exported from your browser (for the playback template)
 
-### About the `.wvd` file
+### The `.wvd` file
 
-A `.wvd` file is a Widevine *device* (key + identity). dashrip does **not**
-ship one and will not work without your own. You are responsible for
-obtaining one lawfully for a device you own, and for keeping it secure —
-**it is a credential**. It is never uploaded anywhere by this software.
+A `.wvd` file is a Widevine device: the CDM key material plus a device
+identity. dashrip does not ship one and will not run without your own. It is
+a credential. Obtain it lawfully for a device you own, keep it secure, and
+note that it is never uploaded anywhere by this software.
 
-> Practical note: devices at **L3** security level typically unlock up to
-> 720p on these platforms; **L1** devices unlock higher tiers. See
-> [docs/kid-tiers.md](docs/kid-tiers.md).
+Devices at L3 security level typically top out at 720p on these platforms;
+L1 devices unlock higher tiers. See [docs/kid-tiers.md](docs/kid-tiers.md).
 
 ## Quickstart
 
 ```bash
-git clone https://github.com/<you>/dashrip
+git clone https://github.com/zxsmind/dashrip
 cd dashrip
 pip install -r requirements.txt
 
-python -m dashrip init      # guided one-time setup
-python -m dashrip doctor    # verify everything is green
+python -m dashrip init      # one-time guided setup
+python -m dashrip doctor    # confirm everything is green
 python -m dashrip max "interstellar"
 ```
 
-`init` asks for the device file, the session cookie, a HAR capture from
-your browser (F12 → Network → play anything → *Save all as HAR*), your
-ffmpeg/shaka paths, and the output directory — then runs `doctor`.
+`init` asks for the device file, the session cookie, a HAR capture (F12,
+Network, play anything, "Save all as HAR"), your ffmpeg and shaka paths, and
+the output directory, then runs `doctor`.
 
-### `max` — interactive
+### `max`
+
+Interactive:
 
 ```
 $ python -m dashrip max
-> the dark knight          (or a URL, or a show UUID)
+> the dark knight          (title, URL, or show UUID)
 > .
 Output directory [default]:
   video: 1280x534 | audio: en-US, tr | subs: en-US, tr
   which audio to include? (blank = all)
-  which subs to include?  (blank = all; n = none)
-  embed in MKV (1) / sidecar files (2)?
+  which subs to include?  (blank = all, n = none)
+  embed in MKV (1) or sidecar files (2)?
   download show poster? [Y/n]:
 ```
 
-Batch: paste several lines before the final `.`.
+Paste several titles before the final `.` to batch them.
 
-### `max` — non-interactive / flags
+Non-interactive:
 
 ```bash
 python -m dashrip max "inception" "tenet" \
@@ -126,68 +106,66 @@ python -m dashrip max "inception" "tenet" \
     --outdir D:/Media
 ```
 
-Series episode selection: `--ep 1-6`, `--ep S01E02`, etc.
+Series episodes: `--ep 1-6`, `--ep S01E02`, and so on.
 
-### `prime` — Amazon Prime (capture-assisted)
+### `prime` (capture-assisted)
 
-Amazon's player uses **single-use, device-bound playback sessions**, so a
-fully headless pipeline is not possible. The supported flow is
-capture-assisted:
+Amazon's player uses single-use, device-bound playback sessions, so a fully
+headless pipeline is not possible. The supported flow:
 
-1. In the browser (with a Widevine proxy extension + your `.wvd` loaded),
-   play the content for ~10 seconds.
-2. Copy the ready-made `N_m3u8DL-RE` command from the extension's History.
-3. `python -m dashrip prime` and paste it.
+1. In the browser, with a Widevine proxy extension and your `.wvd` loaded,
+   play the content for about 10 seconds.
+2. Copy the ready-made N_m3u8DL-RE command from the extension's History.
+3. Run `python -m dashrip prime` and paste it.
 
-dashrip then downloads, decrypts, verifies, renames, files, and records
-the result automatically. See [docs/platform-notes.md](docs/platform-notes.md).
+dashrip then downloads, decrypts, verifies, files, and records the result.
+See [docs/platform-notes.md](docs/platform-notes.md).
 
-## How it works (short version)
+## How it works
 
-1. The platform's CMS resolves the title to show/video IDs.
-2. A `playbackInfo` request (your captured template + your cookie) returns
+1. The platform CMS resolves the title to show and video IDs.
+2. A playbackInfo request (your captured template plus your cookie) returns
    the signed DASH manifest URL and the Widevine license URL.
-3. The MPD is parsed: the best available video representation, every audio
-   dub, every subtitle track, and the Widevine PSSH.
-4. The `.wvd` device requests a license; the content keys are extracted
-   (with per-tier key-ID aliasing — see the docs, this matters).
-5. Media files are downloaded from the CDN (plain HTTP, token in URL),
-   decrypted with shaka-packager, and remuxed to MKV with ffmpeg.
-6. The result is moved into the standard layout, poster(s) fetched, and
-   the manifest updated. Transient working files are removed.
+3. The MPD is parsed: the best video representation, every audio dub, every
+   subtitle track, and the Widevine PSSH.
+4. Your `.wvd` device requests a license; the content keys are extracted,
+   with per-tier key-id aliasing. See [docs/kid-tiers.md](docs/kid-tiers.md)
+   for why this step is required.
+5. The media files are downloaded from the CDN, decrypted with
+   shaka-packager, and remuxed to MKV with ffmpeg.
+6. The result is moved into the library layout, posters are fetched, and the
+   manifest is updated. Working files are removed.
 
-Deep dives: [docs/architecture.md](docs/architecture.md) ·
-[docs/kid-tiers.md](docs/kid-tiers.md) ·
-[docs/platform-notes.md](docs/platform-notes.md)
+Module layout and design notes: [docs/architecture.md](docs/architecture.md).
+Per-platform behavior: [docs/platform-notes.md](docs/platform-notes.md).
 
 ## Troubleshooting
 
-Run `python -m dashrip doctor` — it reports, line by line, which piece of
-the stack is missing or rejected:
+Run `python -m dashrip doctor`. It reports, line by line, which piece of the
+stack is missing or rejected:
 
-- `device ... not set` → load a `.wvd` in `init`.
-- `cookie ... EXPIRED` → capture a fresh cookie (F12 → Network → any
-  request → request headers → `cookie`).
-- `cms ... HTTP 401/403` → cookie or the session headers in the config are
-  stale; re-capture the HAR and run `init` again.
-- `playback ... missing` → your HAR did not include a `playbackInfo`
-  request; play something in the browser *before* saving the HAR.
+- `device ... not set`: load a `.wvd` in `init`.
+- `cookie ... EXPIRED`: capture a fresh cookie (F12, Network, any request,
+  request headers, `cookie`).
+- `cms ... HTTP 401/403`: the cookie or session headers in the config are
+  stale. Recapture the HAR and run `init` again.
+- `playback ... missing`: your HAR had no playbackInfo request. Play
+  something in the browser before saving the HAR.
 
-## Security & privacy notes
+## Security
 
-- Your cookie, `.wvd`, and the playback template live in
-  `config/dashrip.json` (git-ignored). Treat that file like a password.
-- Media is downloaded from the platform's CDN over HTTPS; no third-party
-  service is involved.
-- dashrip never uploads your media, device, or credentials anywhere.
+Your cookie, `.wvd`, and the playback template live in `config/dashrip.json`,
+which is git-ignored. Treat that file like a password. Media is downloaded
+directly from the platform CDN over HTTPS. Nothing is sent to any third-party
+service, and dashrip never uploads your media, device, or credentials.
 
 ## Contributing
 
-PRs are welcome. Keep the platform-specific quirks in `core.py` /
-`platform notes`, keep the CLI thin, and add an offline smoke test for
-anything you change (see `test_dashrip_*.py` in the development tree).
+Keep platform-specific quirks in `core.py`, keep the CLI thin, and add an
+offline smoke test for anything you change. The development tree has
+`test_dashrip_*.py`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). And the legal notice above stands: you use
+MIT. See [LICENSE](LICENSE). The legal notice above still applies: you use
 this at your own responsibility.
