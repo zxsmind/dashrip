@@ -1,0 +1,21 @@
+{
+  "bwlimit_kbps": 0,
+  "cms_headers": {
+    "x-disco-client": "<from your HAR: x-disco-client header>",
+    "x-device-info": "<from your HAR: x-device-info header>"
+  },
+  "cookie": "st=<your JWT token>",
+  "ffprobe": "ffprobe",
+  "ffmpeg": "ffmpeg",
+  "outdir": "",
+  "playback": {
+    "body": "<playbackInfo request body, captured from your browser HAR>",
+    "headers": {
+      "x-wbd-ace": "<from your HAR>"
+    },
+    "template_edit_id": "<the editId UUID found inside the body>",
+    "url": "https://.../playbackInfo"
+  },
+  "shaka": "shaka-packager",
+  "wvd": "C:/path/to/your/device.wvd"
+}
