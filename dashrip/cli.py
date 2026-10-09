@@ -98,7 +98,8 @@ def load_catalog(cfg):
     for rt in ["home"] + ["genre/" + g for g in GENRES]:
         try:
             r = requests_get(cfg, K.CMS_BASE + "/cms/routes/" + rt +
-                             "?include=default&decorators=badges", timeout=60)
+                             "?include=default&decorators=badges",
+                             headers=hdrs, timeout=60)
             if r.status_code == 200:
                 for x in r.json().get("included", []):
                     if x.get("type") == "show":
