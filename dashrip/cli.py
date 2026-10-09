@@ -516,8 +516,9 @@ def cmd_max(args):
                 tdir0 = S.title_dir(outdir, title, meta, is_series)
                 os.makedirs(tdir0, exist_ok=True)
                 K.fetch_image(cfg, show_poster, os.path.join(tdir0, "poster.jpg"))
-            log("  plan: %d item(s) | audio: %s | subs: %s | mode: %s"
-                % (len(sel), audios, subs or "none", mode))
+            it = "item" if len(sel) == 1 else "items"
+            log("  plan: %d %s | audio: %s | subs: %s | mode: %s"
+                % (len(sel), it, audios, subs or "none", mode))
             for i, v in enumerate(sel, 1):
                 ep_p = ep_posters.get(v.get("vid")) if want_ep_p else None
                 try:
