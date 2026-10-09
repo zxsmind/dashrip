@@ -584,3 +584,112 @@ def quick_decode(cfg_obj, path, seconds=15):
         [ffmpeg, "-v", "error", "-t", str(seconds), "-i", path, "-f", "null", "-"],
         capture_output=True, text=True)
     return not r.stderr.strip()
+
+
+# ------------------------- Prime subtitles (HAR) -------------------------
+
+def fetch_ttml(url):
+    """Fetch a Prime timed-text (TTML) file. Returns text, or "" on failure."""
+    try:
+        r = requests.get(url, headers={"User-Agent": UA}, timeout=60)
+        if r.status_code == 200 and r.text.strip():
+            return r.text
+    except Exception:
+        pass
+    return ""
+
+
+def _ttml_ts_to_ms(ts):
+    """'HH:MM:SS.mmm' / 'MM:SS.mmm' / 'PT1H2M3.4S' -> milliseconds."""
+    ts = ts.strip()
+    if ts.startswith("PT"):
+        h = re.search(r'(\d+(?:\.\d+)?)H', ts)
+        m = re.search(r'(\d+(?:\.\d+)?)M', ts)
+        s = re.search(r'(\d+(?:\.\d+)?)S', ts)
+        return int((float(h.group(1) if h else 0) * 3600
+                    + float(m.group(1) if m else 0) * 60
+                    + float(s.group(1) if s else 0)) * 1000)
+    parts = ts.rstrip("Z").split(":")
+    if len(parts) == 2:
+        parts = ["0"] + parts
+    h, mnt, sec = parts
+    base, _, frac = sec.partition(".")
+    return (int(h) * 3600 + int(mnt) * 60 + int(base)) * 1000 + int((frac + "000")[:3])
+
+
+def _ms_to_srt_ts(ms):
+    h = ms // 3600000
+    ms %= 3600000
+    mnt = ms // 60000
+    ms %= 60000
+    return "%02d:%02d:%02d,%03d" % (h, mnt, ms // 1000, ms % 1000)
+
+
+def ttml_to_srt(ttml):
+    """Convert Prime TTML (IMSC1) to SRT text. Returns "" if no cues found.
+
+    Supports begin/end and begin/dur cues, <br> line breaks, <span> markup
+    (tags stripped, text kept) and HTML entities.
+    """
+    import html as _html
+    cues = []
+
+    def _body(body):
+        body = re.sub(r'<br\s*/?>', '\n', body)
+        body = re.sub(r'<[^>]+>', '', body)
+        return _html.unescape(body).strip()
+
+    for m in re.finditer(
+            r'<p\b[^>]*\bbegin="([^"]+)"[^>]*\bend="([^"]+)"[^>]*>(.*?)</p>',
+            ttml, re.S):
+        b = _body(m.group(3))
+        if b:
+            cues.append((_ttml_ts_to_ms(m.group(1)), _ttml_ts_to_ms(m.group(2)), b))
+    if not cues:
+        for m in re.finditer(
+                r'<p\b[^>]*\bbegin="([^"]+)"[^>]*\bdur="([^"]+)"[^>]*>(.*?)</p>',
+                ttml, re.S):
+            b = _body(m.group(3))
+            if b:
+                t0 = _ttml_ts_to_ms(m.group(1))
+                cues.append((t0, t0 + _ttml_ts_to_ms(m.group(2)), b))
+    if not cues:
+        return ""
+    return "\n".join("%d\n%s --> %s\n%s\n"
+                      % (n, _ms_to_srt_ts(b), _ms_to_srt_ts(e), txt)
+                      for n, (b, e, txt) in enumerate(cues, 1))
+
+
+def parse_prime_har(har_path):
+    """Read a browser HAR capture of a Prime playback.
+
+    Returns {"subs": [{code, name, url, format}], "mpd_url": str, "error": str}.
+    """
+    try:
+        with open(har_path, "r", encoding="utf-8") as f:
+            har = json.load(f)
+    except Exception as e:
+        return {"subs": [], "mpd_url": "", "error": "cannot read HAR: %r" % e}
+    res = {"subs": [], "mpd_url": "", "error": ""}
+    for entry in har.get("log", {}).get("entries", []):
+        url = entry.get("request", {}).get("url", "")
+        text = (entry.get("response", {}).get("content", {}) or {}).get("text") or ""
+        if "timedTextUrls" in text:
+            try:
+                body = json.loads(text)
+            except Exception:
+                continue
+            subs = (((body.get("timedTextUrls") or {}).get("result") or {})
+                    .get("subtitleUrls") or [])
+            out = [{"code": s.get("languageCode", ""),
+                    "name": s.get("displayName", ""),
+                    "url": s.get("url", ""),
+                    "format": s.get("format", "")} for s in subs]
+            if out:
+                res["subs"] = out
+                break
+        if not res["mpd_url"] and ".mpd" in url:
+            res["mpd_url"] = url
+    if not res["subs"] and not res["error"]:
+        res["error"] = "no timedTextUrls found in this HAR"
+    return res

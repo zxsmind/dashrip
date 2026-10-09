@@ -117,6 +117,13 @@ headless pipeline is not possible. The supported flow:
 2. Copy the ready-made N_m3u8DL-RE command from the extension's History.
 3. Run `python -m dashrip prime` and paste it.
 
+Subtitles are not in the MPD; Amazon serves them from a separate channel
+in the playback response. To include them, keep DevTools open (Network tab,
+"Preserve log" checked) while playing, and save the capture with
+"Save all as HAR with content". Offer that file when `prime` asks. dashrip
+lists the subtitle tracks it captured (30+ languages), converts the ones you
+pick (TTML to SRT), and embeds them in the MKV.
+
 dashrip then downloads, decrypts, verifies, files, and records the result.
 See [docs/platform-notes.md](docs/platform-notes.md).
 

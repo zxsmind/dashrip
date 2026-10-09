@@ -298,7 +298,7 @@ def probe_tracks(cfg, edit_id):
             "video_wh": parsed["video_wh"]}
 
 
-def _pick_langs(label, available, allow_none=False, preset=""):
+def _pick_langs(label, available, allow_none=False, preset="", blank_none=False):
     # Case-insensitive match: language codes carry an uppercase region
     # (en-US, de-DE) but typed input is lower-cased. Return the original
     # casing exactly as it appears in `available`.
@@ -324,9 +324,12 @@ def _pick_langs(label, available, allow_none=False, preset=""):
         print("%s: none available." % label)
         return []
     print("%s available: %s" % (label, ", ".join(available)))
-    hint = "blank = all" + ("; n = none" if allow_none else "")
+    hint = ("blank = none" if blank_none else "blank = all") \
+        + ("; n = none" if allow_none else "")
     raw = input("  which to include? (%s; or comma list) " % hint).strip().lower()
     if raw in ("", "all", "a"):
+        if blank_none and raw == "":
+            return []
         return list(available)
     if allow_none and raw in ("n", "none", "0"):
         return []
@@ -767,6 +770,11 @@ decrypts, renames and files everything automatically.
  2. Open the extension's History, open the captured entry, and press
     "copy" on the Command line (an N_m3u8DL-RE command).
  3. Paste that command below.
+
+ Optional: with F12 open (Network tab, "Preserve log"), save the playback
+ as "HAR with content". If you offer the file when asked, dashrip lists the
+ subtitle tracks it captured (30+ languages), converts the ones you pick,
+ and embeds them in the MKV.
 """
 
 
@@ -847,6 +855,19 @@ def cmd_prime(args):
         return 1
     log("MPD: %s" % parsed["url"][:100] + "...")
     log("keys captured: %d" % len(parsed["keys"]))
+    har_path = input("HAR file (optional, enables subtitles) [blank]: ") \
+        .strip().strip('"')
+    har_subs = []
+    if har_path:
+        if not os.path.exists(har_path):
+            log("  HAR not found: %s (continuing without subtitles)" % har_path)
+        else:
+            h = K.parse_prime_har(har_path)
+            if h["error"]:
+                log("  HAR: %s (continuing without subtitles)" % h["error"])
+            else:
+                har_subs = h["subs"]
+                log("  HAR: %d subtitle tracks available" % len(har_subs))
     try:
         vids, auds = _probe_prime_mpd(cfg, parsed["url"], parsed["headers"])
     except Exception as e:
@@ -868,11 +889,18 @@ def cmd_prime(args):
         extra += ["-sv", 'res="%s*":for=best' % q.split("x")[0]]
     elif any(v[1].startswith("1280") for v in vids):
         extra += ["-sv", 'res="1280*":for=best']
-    if a:
-        extra += ["-sa", "lang=%s:for=best" % a]
-    elif auds:
-        pref = "tr" if "tr" in auds else auds[0]
-        extra += ["-sa", "lang=%s:for=best" % pref]
+    chosen_audio = a
+    if not chosen_audio and auds:
+        chosen_audio = "tr" if "tr" in auds else auds[0]
+    if chosen_audio:
+        extra += ["-sa", "lang=%s:for=best" % chosen_audio]
+
+    sel_subs = []
+    if har_subs:
+        picked = _pick_langs("Subtitles",
+                             [s["code"] for s in har_subs], True, "",
+                             blank_none=True)
+        sel_subs = [s for s in har_subs if s["code"] in picked]
 
     run_dir = os.path.join(_workdir(), "prime_%s" % time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(run_dir, exist_ok=True)
@@ -906,6 +934,42 @@ def cmd_prime(args):
         print("No .mkv found in the work dir; check the output above.")
         return 1
 
+    embedded_subs = []
+    if sel_subs:
+        ffmpeg = C.resolve_tool(cfg.get("ffmpeg") or "ffmpeg") or "ffmpeg"
+        srt_inputs = []
+        for s in sel_subs:
+            txt = K.fetch_ttml(s["url"])
+            srt = K.ttml_to_srt(txt)
+            if not srt:
+                log("  subtitle %s: nothing converted; skipped" % s["code"])
+                continue
+            sp = os.path.join(work, "sub_%s.srt" % s["code"])
+            with open(sp, "w", encoding="utf-8") as f:
+                f.write(srt)
+            srt_inputs.append((sp, s["code"]))
+        if srt_inputs:
+            out_mkv = os.path.join(work, "with_subs.mkv")
+            cmd2 = [ffmpeg, "-y", "-i", mkv]
+            for sp, code in srt_inputs:
+                cmd2 += ["-i", sp]
+            cmd2 += ["-map", "0"]
+            for i in range(len(srt_inputs)):
+                cmd2 += ["-map", "%d:0" % (i + 1)]
+            cmd2 += ["-c", "copy", "-c:s", "srt"]
+            for i in range(len(srt_inputs)):
+                lang = srt_inputs[i][1].split("-")[0][:2] or "und"
+                cmd2 += ["-metadata:s:s:%d" % i, "language=%s" % lang]
+            cmd2 += [out_mkv]
+            r2 = subprocess.run(cmd2, cwd=work)
+            if r2.returncode == 0 and os.path.exists(out_mkv):
+                mkv = out_mkv
+                embedded_subs = [c for _, c in srt_inputs]
+                log("  subtitles embedded: %s" % ", ".join(embedded_subs))
+            else:
+                log("  subtitle remux failed (ffmpeg exit %d); "
+                    "delivering without subtitles" % r2.returncode)
+
     info = K.probe(cfg, mkv)
     dur = float(info.get("format", {}).get("duration") or 0)
     title = input("Title (as shown on the player) [unknown]: ").strip() or "unknown"
@@ -926,7 +990,9 @@ def cmd_prime(args):
     os.makedirs(os.path.dirname(final), exist_ok=True)
     shutil.move(mkv, final)
     S.manifest_append(outdir, S.make_entry(
-        outdir, title, v, final, {"video_wh": ""}, info, [], [], [], False))
+        outdir, title, v, final, {"video_wh": ""}, info,
+        [(chosen_audio, "")] if chosen_audio else [],
+        [(c, "") for c in embedded_subs], [], False))
     S.cleanup(run_dir)
     print("Delivered: %s" % final)
     return 0
