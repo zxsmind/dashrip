@@ -42,6 +42,11 @@ to MKV, and file it into your library.
 - `doctor`: a health check of the whole stack before you start.
 - `sync`: a resumable, SHA-256-verified folder transfer for moving a finished
   library to a server or NAS.
+- Defaults for the track prompts (`defaults` in `config/dashrip.json`): the
+  choices applied when a prompt is left blank. The `orig` pseudo-code stands
+  for the content's original language; for example
+  `"audio": ["orig", "tr"]` keeps the original track plus a Turkish dub when
+  one exists.
 
 ## Requirements
 
@@ -135,6 +140,8 @@ config; otherwise the keys come from the pasted command.
 MPD urls expire after about 30 minutes; recapture for another run.
 
 dashrip then downloads, decrypts, verifies, files, and records the result.
+If a Turkish dub exists for the content and it is not the track you selected,
+it is fetched and added as an extra audio track (no re-encode).
 See [docs/platform-notes.md](docs/platform-notes.md).
 
 ## How it works
