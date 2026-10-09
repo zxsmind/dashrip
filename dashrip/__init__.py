@@ -14,4 +14,4 @@ The package never bundles a Widevine device: you provide your own ``.wvd``
 file (see ``docs/device.md``).
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
