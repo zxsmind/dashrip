@@ -80,6 +80,7 @@ def _defaults() -> dict:
             "template_edit_id": "",
         },
         "cms_headers": {},
+        "defaults": {"audio": ["orig"], "subs": "all"},
     }
 
 
@@ -91,9 +92,9 @@ def load(path_: str | None = None) -> dict:
         with open(p, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         for key, val in data.items():
-            if key == "playback" and isinstance(val, dict):
+            if key in ("playback", "defaults") and isinstance(val, dict):
                 for k2, v2 in val.items():
-                    cfg["playback"][k2] = v2
+                    cfg[key][k2] = v2
             else:
                 cfg[key] = val
     return cfg

@@ -237,6 +237,28 @@ def _xsd_duration(s):
     return days * 86400 + hours * 3600 + mins * 60 + secs
 
 
+def resolve_original_lang(audio_langs, original_hint=""):
+    """Resolve the 'orig' pseudo-code to a concrete audio language code.
+
+    original_hint is the platform-designated original track language (e.g.
+    Prime's defaultAudioTrackId); if its base language matches an available
+    track it wins.  Otherwise the first track is used (platforms list the
+    original first in the manifest).
+    """
+    langs = list(audio_langs or [])
+    if not langs:
+        return None
+    if len(langs) == 1:
+        return langs[0]
+    if original_hint:
+        base = str(original_hint).split("-")[0].split("_")[0].lower()
+        if base:
+            for a in langs:
+                if a.lower().split("-")[0] == base:
+                    return a
+    return langs[0]
+
+
 def parse_mpd(mpd_xml):
     """Parse the DASH manifest.
 
@@ -673,7 +695,8 @@ def parse_prime_har(har_path):
     challenge_b64, license_b64, error.
     """
     res = {"subs": [], "mpd_url": "", "mpd_headers": [], "title_id": "",
-           "challenge_b64": "", "license_b64": "", "error": ""}
+           "original_lang": "", "challenge_b64": "", "license_b64": "",
+           "error": ""}
     try:
         with open(har_path, "r", encoding="utf-8") as f:
             har = json.load(f)
@@ -700,6 +723,10 @@ def parse_prime_har(har_path):
                                      "url": s.get("url", ""),
                                      "format": s.get("format", "")}
                                     for s in subs]
+        if not res["original_lang"] and "defaultAudioTrackId" in text:
+            m = re.search(r'"defaultAudioTrackId"\s*:\s*"([^"]+)"', text)
+            if m:
+                res["original_lang"] = m.group(1).split("_")[0]
         if not res["mpd_url"] and ".mpd" in url:
             res["mpd_url"] = url
             for h in req.get("headers", []) or []:

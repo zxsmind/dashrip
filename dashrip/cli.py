@@ -298,7 +298,44 @@ def probe_tracks(cfg, edit_id):
             "video_wh": parsed["video_wh"]}
 
 
-def _pick_langs(label, available, allow_none=False, preset="", blank_none=False):
+def _resolve_audio_policy(policy, available, original_hint=""):
+    """Resolve a configured audio policy to concrete available codes.
+
+    The policy may be a list (e.g. ["orig", "tr"]), a comma string,
+    "all"/"a", or "none"/"n".  The 'orig' pseudo-code resolves to the
+    content's original language.  Returns a list of available codes,
+    None for "all", or [] for "none".
+    """
+    if policy is None or policy == "":
+        return None
+    if isinstance(policy, str):
+        policy = [x.strip() for x in policy.replace(" ", ",").split(",")
+                  if x.strip()]
+    if not policy:
+        return None
+    if len(policy) == 1 and policy[0].lower() in ("all", "a"):
+        return None
+    if len(policy) == 1 and policy[0].lower() in ("none", "n"):
+        return []
+    by_lc = {a.lower(): a for a in available}
+    out = []
+    for p in policy:
+        if p.lower() == "orig":
+            o = K.resolve_original_lang(available, original_hint)
+            if o:
+                out.append(o)
+        elif p.lower() in by_lc:
+            out.append(by_lc[p.lower()])
+    seen, res = set(), []
+    for x in out:
+        if x.lower() not in seen:
+            seen.add(x.lower())
+            res.append(x)
+    return res
+
+
+def _pick_langs(label, available, allow_none=False, preset="", blank_none=False,
+                default_policy=None):
     # Case-insensitive match: language codes carry an uppercase region
     # (en-US, de-DE) but typed input is lower-cased. Return the original
     # casing exactly as it appears in `available`.
@@ -323,13 +360,25 @@ def _pick_langs(label, available, allow_none=False, preset="", blank_none=False)
     if not available:
         print("%s: none available." % label)
         return []
+    # the blank default: a configured policy (filtered to what is
+    # available), otherwise all / none
+    policy = None
+    if default_policy is not None:
+        by_avail = {x.lower(): x for x in available}
+        policy = [by_avail[p.lower()] for p in default_policy
+                  if p.lower() in by_avail]
+    use_policy = policy is not None
+    blank_label = (", ".join(policy) if policy else "none") if use_policy \
+        else ("none" if blank_none else "all")
     print("%s available: %s" % (label, ", ".join(available)))
-    hint = ("blank = none" if blank_none else "blank = all") \
+    hint = ("blank = %s" % blank_label) \
         + ("; n = none" if allow_none else "")
     raw = input("  which to include? (%s; or comma list) " % hint).strip().lower()
     if raw in ("", "all", "a"):
-        if blank_none and raw == "":
-            return []
+        if raw == "":
+            if use_policy:
+                return policy
+            return [] if blank_none else list(available)
         return list(available)
     if allow_none and raw in ("n", "none", "0"):
         return []
@@ -339,8 +388,11 @@ def _pick_langs(label, available, allow_none=False, preset="", blank_none=False)
     return ok
 
 
-def choose_tracks(probe, audio_preset="", subs_preset="", embed_preset=""):
-    audios = _pick_langs("Audio (dubs)", probe["audio"], False, audio_preset)
+def choose_tracks(probe, audio_preset="", subs_preset="", embed_preset="",
+                  audio_default=None, original_hint=""):
+    audios = _pick_langs("Audio (dubs)", probe["audio"], False, audio_preset,
+                         default_policy=_resolve_audio_policy(
+                             audio_default, probe["audio"], original_hint))
     if not audios:
         audios = [probe["audio"][0]]
         print("  no audio selected; defaulting to first: %s" % audios[0])
@@ -527,7 +579,11 @@ def cmd_max(args):
                 audio_p = args.audio or "all"
                 subs_p = args.subs or "all"
                 embed_p = args.embed or "1"
-            audios, subs, mode = choose_tracks(probe, audio_p, subs_p, embed_p)
+            audios, subs, mode = choose_tracks(
+                probe, audio_p, subs_p, embed_p,
+                audio_default=(cfg.get("defaults") or {}).get("audio",
+                                                              ["orig"]),
+                original_hint="")
             if interactive:
                 want_show_p = ask_yn("Download show poster?", True)
                 want_ep_p = ask_yn("Download episode posters?", True) \
@@ -841,6 +897,57 @@ def _probe_prime_mpd(cfg, url, headers):
     return sorted(set(vids)), sorted(set(auds))
 
 
+def _add_prime_dub(cfg, mpd_url, headers, keys, tr_lang, mkv, work):
+    """Download a dub track from the Prime MPD, decrypt it, and remux it
+    into the existing MKV as an extra audio track (no re-encode).
+    Returns the new MKV path, or None if it could not be added."""
+    import requests
+    hdrs = {"User-Agent": K.UA,
+            "Origin": "https://www.primevideo.com",
+            "Referer": "https://www.primevideo.com/"}
+    for h in headers:
+        if ":" in h:
+            k, v = h.split(":", 1)
+            hdrs[k.strip()] = v.strip()
+    try:
+        r = requests.get(mpd_url, headers=hdrs, timeout=30)
+        r.raise_for_status()
+        parsed = K.parse_mpd(r.text)
+    except Exception as e:
+        log("  dub %s: cannot fetch/parse MPD (%s); skipped" % (tr_lang, e))
+        return None
+    tr_path = None
+    for lg, p in parsed["audio"].items():
+        if lg.lower().split("-")[0] == "tr":
+            tr_path, tr_lang = p, lg
+            break
+    if not tr_path:
+        log("  dub %s: not in the MPD; skipped" % tr_lang)
+        return None
+    base = K.cdn_base(mpd_url)
+    max_bps = int((cfg.get("bwlimit_kbps") or 0) * 1000 // 8)
+    src = os.path.join(work, "dub_%s.mp4" % tr_lang)
+    dec = os.path.join(work, "dub_%s.dec" % tr_lang)
+    try:
+        K.dl(cfg, base + tr_path, src, max_bps)
+        K.shaka_decrypt(cfg, src, dec, "audio", keys)
+    except Exception as e:
+        log("  dub %s: download/decrypt failed (%s); skipped" % (tr_lang, e))
+        return None
+    out = os.path.join(work, "with_dub.mkv")
+    ffmpeg = C.resolve_tool(cfg.get("ffmpeg") or "ffmpeg") or "ffmpeg"
+    r2 = subprocess.run([ffmpeg, "-y", "-i", mkv, "-i", dec,
+                         "-map", "0", "-map", "1:0", "-c", "copy",
+                         "-metadata:s:a:1", "language=tr", out],
+                        cwd=work, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL)
+    if r2.returncode == 0 and os.path.exists(out):
+        return out
+    log("  dub %s: remux failed (ffmpeg exit %d); skipped"
+        % (tr_lang, r2.returncode))
+    return None
+
+
 def cmd_prime(args):
     cfg = C.load()
     exe = C.resolve_tool(cfg.get("nm3u8dlre") or "N_m3u8DL-RE")
@@ -857,6 +964,7 @@ def cmd_prime(args):
                          "command): ").strip().strip('"')
 
     mpd_url, headers, har_subs, prime_meta, keys = "", [], [], {}, {}
+    original_hint = ""
     parsed = None
     if har_path:
         if not os.path.exists(har_path):
@@ -869,6 +977,7 @@ def cmd_prime(args):
         har_subs = h["subs"]
         mpd_url = h["mpd_url"]
         headers = h["mpd_headers"]
+        original_hint = h.get("original_lang", "")
         if har_subs:
             log("  HAR: %d subtitle tracks available" % len(har_subs))
         if h.get("title_id"):
@@ -917,8 +1026,10 @@ def cmd_prime(args):
     else:
         q = ""
     if auds:
+        orig = K.resolve_original_lang(auds, original_hint)
         print("  audio: %s" % ", ".join(auds))
-        a = input("  audio (blank = first): ").strip()
+        a = input("  audio (blank = original: %s; or a code) "
+                  % orig).strip()
     else:
         a = ""
 
@@ -937,15 +1048,22 @@ def cmd_prime(args):
         extra += ["-sv", 'res="1280*":for=best']
     chosen_audio = a
     if not chosen_audio and auds:
-        chosen_audio = "tr" if "tr" in auds else auds[0]
+        chosen_audio = K.resolve_original_lang(auds, original_hint)
     if chosen_audio:
         extra += ["-sa", "lang=%s:for=best" % chosen_audio]
+    tr_lang = None
+    if auds and chosen_audio:
+        for x in auds:
+            if x.lower().split("-")[0] == "tr" \
+                    and x.lower() != chosen_audio.lower():
+                tr_lang = x
+                break
 
     sel_subs = []
     if har_subs:
-        picked = _pick_langs("Subtitles",
-                             [s["code"] for s in har_subs], True, "",
-                             blank_none=True)
+        codes = [s["code"] for s in har_subs]
+        picked = _pick_langs("Subtitles", codes, True, "",
+                             default_policy=codes)
         sel_subs = [s for s in har_subs if s["code"] in picked]
 
     want_poster = False
@@ -1016,6 +1134,15 @@ def cmd_prime(args):
                 log("  subtitle remux failed (ffmpeg exit %d); "
                     "delivering without subtitles" % r2.returncode)
 
+    tr_added = False
+    if tr_lang:
+        dub_mkv = _add_prime_dub(cfg, mpd_url, headers, keys, tr_lang, mkv,
+                                 run_dir)
+        if dub_mkv:
+            mkv = dub_mkv
+            tr_added = True
+            log("  dub %s embedded" % tr_lang)
+
     info = K.probe(cfg, mkv)
     dur = float(info.get("format", {}).get("duration") or 0)
     def_title = prime_meta.get("title", "")
@@ -1049,10 +1176,15 @@ def cmd_prime(args):
             log("  poster: downloaded")
         except Exception as ex:
             log("  poster: skipped (%s: %s)" % (type(ex).__name__, ex))
+    audio_list = []
+    if chosen_audio:
+        audio_list.append((chosen_audio, ""))
+    if tr_added:
+        audio_list.append((tr_lang, ""))
     shutil.move(mkv, final)
     S.manifest_append(outdir, S.make_entry(
         outdir, title, v, final, {"video_wh": ""}, info,
-        [(chosen_audio, "")] if chosen_audio else [],
+        audio_list,
         [(c, "") for c in embedded_subs], [], False))
     S.cleanup(run_dir)
     print("Delivered: %s" % final)
