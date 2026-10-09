@@ -91,7 +91,10 @@ def resolve(cfg_obj, show_id):
                 "season": attr.get("seasonNumber"),
                 "episode": attr.get("episodeNumber"),
                 "duration": attr.get("duration", 0),
-                "airDate": attr.get("premiereDate") or attr.get("releaseDate") or "",
+                "airDate": (attr.get("airDate")
+                            or attr.get("firstAvailableDate")
+                            or attr.get("premiereDate")
+                            or attr.get("releaseDate") or ""),
                 "desc": attr.get("synopsis", ""),
             })
     videos.sort(key=lambda v: (v.get("season") or 0, v.get("episode") or 0))
@@ -141,11 +144,18 @@ def fetch_image(cfg_obj, url, dest):
     """Download a poster; skip if already present and non-empty."""
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
         return False
-    r = requests.get(url, headers={"User-Agent": UA}, timeout=60)
-    r.raise_for_status()
-    with open(dest, "wb") as f:
-        f.write(r.content)
-    return True
+    last = None
+    for attempt in range(3):
+        try:
+            r = requests.get(url, headers={"User-Agent": UA}, timeout=60)
+            r.raise_for_status()
+            with open(dest, "wb") as f:
+                f.write(r.content)
+            return True
+        except Exception as ex:
+            last = ex
+            time.sleep(2 * (attempt + 1))
+    raise last
 
 
 # --------------------------------------------------------------------------

@@ -228,6 +228,22 @@ def series_videos(videos):
             if v["season"] is not None or v["episode"] is not None]
 
 
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def fmt_airdate(s):
+    """'2024-08-15T00:01:00Z' -> '15 Aug 2024'; '' when unparseable."""
+    try:
+        y, m, d = s[:10].split("-")
+        y, m, d = int(y), int(m), int(d)
+        if not (1990 <= y <= 2100 and 1 <= m <= 12 and 1 <= d <= 31):
+            return ""
+        return "%d %s %d" % (d, _MONTHS[m - 1], y)
+    except Exception:
+        return ""
+
+
 def choose_episodes(videos, spec=""):
     seasons = sorted(set(v["season"] for v in videos if v["season"] is not None))
     print("Total %d episodes." % len(videos))
@@ -236,9 +252,14 @@ def choose_episodes(videos, spec=""):
     elif len(seasons) <= 1:
         for v in videos[:30]:
             d = (v["duration"] or 0) / 60000
+            if d > 0:
+                extra = "(%.0f min)" % d
+            else:
+                extra = "(%s)" % fmt_airdate(v.get("airDate") or "")
+                if extra == "()":
+                    extra = "(--)"
             print("  E%-3d %s  %s" % (v["episode"] or 0,
-                                      (v["name"] or "")[:52],
-                                      "(%.0f min)" % d if d > 0 else "(--)"))
+                                      (v["name"] or "")[:52], extra))
         if len(videos) > 30:
             print("  ... %d more" % (len(videos) - 30))
         spec = input("All, or a selection? (blank = all; e.g. 1-6, 1 3 5) ").strip()
@@ -396,7 +417,10 @@ def rip_item(cfg, title, v, audios, subs, mode, outdir, meta,
     tdir = os.path.dirname(final)
     os.makedirs(tdir, exist_ok=True)
     if ep_poster_url:
-        K.fetch_image(cfg, ep_poster_url, os.path.join(tdir, "poster.jpg"))
+        try:
+            K.fetch_image(cfg, ep_poster_url, os.path.join(tdir, "poster.jpg"))
+        except Exception as ex:
+            log("  ep poster: skipped (%s: %s)" % (type(ex).__name__, ex))
     if not os.path.exists(final):
         shutil.copy2(out, final)
     side_final = []
@@ -515,7 +539,12 @@ def cmd_max(args):
             if want_show_p and show_poster:
                 tdir0 = S.title_dir(outdir, title, meta, is_series)
                 os.makedirs(tdir0, exist_ok=True)
-                K.fetch_image(cfg, show_poster, os.path.join(tdir0, "poster.jpg"))
+                try:
+                    K.fetch_image(cfg, show_poster,
+                                  os.path.join(tdir0, "poster.jpg"))
+                except Exception as ex:
+                    log("  poster: skipped (%s: %s)"
+                        % (type(ex).__name__, ex))
             it = "item" if len(sel) == 1 else "items"
             log("  plan: %d %s | audio: %s | subs: %s | mode: %s"
                 % (len(sel), it, audios, subs or "none", mode))
@@ -539,8 +568,9 @@ def cmd_max(args):
                 if i < len(sel):
                     time.sleep(random.uniform(5, 15))
         except Exception as ex:
-            import traceback
-            traceback.print_exc()
+            if getattr(args, "debug", False):
+                import traceback
+                traceback.print_exc()
             results.append((q, "ERROR: %s" % ex))
         if idx < len(items):
             gap = random.uniform(90, 420)
