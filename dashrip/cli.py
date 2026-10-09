@@ -877,14 +877,23 @@ def cmd_prime(args):
     run_dir = os.path.join(_workdir(), "prime_%s" % time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(run_dir, exist_ok=True)
     work = run_dir
-    cmd = [exe, '"%s"' % parsed["url"]]
+    # drop any -M pair coming from the pasted command (added once, below)
+    kept, i = [], 0
+    while i < len(extra):
+        if extra[i] == "-M":
+            i += 2
+            continue
+        kept.append(extra[i])
+        i += 1
+    cmd = [exe, parsed["url"]]
     for h in parsed["headers"]:
-        cmd += ["-H", '"%s"' % h]
+        cmd += ["-H", h]
     for k, v in parsed["keys"].items():
         cmd += ["--key", "%s:%s" % (k, v)]
-    cmd += extra + ["-M", "format=mkv", "-o", work]
-    log("running: " + " ".join(cmd[:6]) + " ...")
-    r = subprocess.run(cmd, shell=True, cwd=work)
+    cmd += kept + ["-M", "format=mkv", "--save-dir", work]
+    log("running: N_m3u8DL-RE + %d header + %d keys (720p/en) ..."
+        % (len(parsed["headers"]), len(parsed["keys"])))
+    r = subprocess.run(cmd, cwd=work)
     if r.returncode != 0:
         print("N_m3u8DL-RE exited with %d" % r.returncode)
         return 1
