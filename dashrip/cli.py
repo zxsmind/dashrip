@@ -277,15 +277,24 @@ def probe_tracks(cfg, edit_id):
 
 
 def _pick_langs(label, available, allow_none=False, preset=""):
+    # Case-insensitive match: language codes carry an uppercase region
+    # (en-US, de-DE) but typed input is lower-cased. Return the original
+    # casing exactly as it appears in `available`.
+    by_lc = {a.lower(): a for a in available}
+
+    def _match(words):
+        words = [x.strip() for x in words.replace(" ", ",").split(",")
+                 if x.strip()]
+        ok = [by_lc[w.lower()] for w in words if w.lower() in by_lc]
+        missing = [w for w in words if w.lower() not in by_lc]
+        return ok, missing
+
     if preset:
-        want = [x.strip() for x in preset.replace(" ", ",").split(",")
-                if x.strip()]
-        if want in (["all"], ["a"]):
+        if preset.strip().lower() in ("all", "a"):
             return list(available)
-        if allow_none and want in (["none"], ["0"], ["n"]):
+        if allow_none and preset.strip().lower() in ("none", "n", "0"):
             return []
-        ok = [w for w in want if w in available]
-        missing = [w for w in want if w not in available]
+        ok, missing = _match(preset)
         if missing:
             log("  ignoring unknown %s: %s" % (label, ", ".join(missing)))
         return ok
@@ -299,9 +308,7 @@ def _pick_langs(label, available, allow_none=False, preset=""):
         return list(available)
     if allow_none and raw in ("n", "none", "0"):
         return []
-    want = [x.strip() for x in raw.replace(" ", ",").split(",") if x.strip()]
-    ok = [w for w in want if w in available]
-    missing = [w for w in want if w not in available]
+    ok, missing = _match(raw)
     if missing:
         print("  (ignoring unknown: %s)" % ", ".join(missing))
     return ok
@@ -337,6 +344,8 @@ def rip_item(cfg, title, v, audios, subs, mode, outdir, meta,
     keys = K.get_keys(cfg, parsed["pssh"], cert, lic_url)
     nreal = sum(1 for k in keys.values() if k and k != "0" * 32)
     log("quality: %s | keys: %d real" % (parsed["video_wh"], nreal))
+    if parsed.get("duration"):
+        log("duration: %.1f min" % (parsed["duration"] / 60.0))
 
     max_bps = int((cfg.get("bwlimit_kbps") or 0) * 1000 // 8)
 
@@ -415,10 +424,12 @@ def cmd_max(args):
         print("Run `dashrip init` (or `dashrip doctor`) first.")
         return 1
 
-    interactive = not (args.queries or args.audio or args.subs
-                       or args.poster or args.outdir)
+    # A content query never controls interactivity; only the per-run
+    # option flags do. A title on the command line is used as-is; we
+    # prompt for titles only when none was passed.
+    interactive = not (args.audio or args.subs or args.poster or args.outdir)
     items = list(args.queries)
-    if interactive:
+    if not items:
         items = get_items()
     if not items:
         print("Nothing to do.")
@@ -932,16 +943,20 @@ def build_parser():
 def main(argv=None):
     p = build_parser()
     args = p.parse_args(argv)
-    if args.cmd == "init":
-        return cmd_init(args)
-    if args.cmd == "doctor":
-        return 0 if D.doctor() else 1
-    if args.cmd == "max":
-        return cmd_max(args)
-    if args.cmd == "prime":
-        return cmd_prime(args)
-    if args.cmd == "sync":
-        return cmd_sync(args)
+    try:
+        if args.cmd == "init":
+            return cmd_init(args)
+        if args.cmd == "doctor":
+            return 0 if D.doctor() else 1
+        if args.cmd == "max":
+            return cmd_max(args)
+        if args.cmd == "prime":
+            return cmd_prime(args)
+        if args.cmd == "sync":
+            return cmd_sync(args)
+    except KeyboardInterrupt:
+        print("\nInterrupted (Ctrl+C). Partial files kept; re-run to resume.")
+        return 130
     p.print_help()
     return 0
 

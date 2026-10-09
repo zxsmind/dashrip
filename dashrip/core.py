@@ -308,6 +308,10 @@ def parse_mpd(mpd_xml):
     if not pssh_b64:
         raise RuntimeError('Widevine PSSH not found')
 
+    try:
+        mpd_dur = float(root.get('duration') or 0)
+    except (TypeError, ValueError):
+        mpd_dur = 0
     return {
         'video_base': v_bu,
         'video_id': v_id,
@@ -315,6 +319,7 @@ def parse_mpd(mpd_xml):
         'audio': audio,
         'subs': list(subs.values()),
         'pssh': base64.b64decode(pssh_b64),
+        'duration': mpd_dur,
     }
 
 
