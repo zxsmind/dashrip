@@ -27,8 +27,15 @@ import time
 # ------------------------- small helpers -------------------------
 
 def safe_dir(name):
-    """Make a string safe for use as a directory/file name component."""
-    return re.sub(r'[\\/:*?"<>|]', '_', (name or 'untitled')).strip() or 'untitled'
+    """Make a string safe for use as a directory/file name component.
+
+    Filesystem-invalid characters (e.g. ':') become a space and runs of
+    whitespace are collapsed, so 'Rick and Morty: The Anime' -> 'Rick and
+    Morty The Anime' (no stray underscores).
+    """
+    s = re.sub(r'[\\/:*?"<>|]', ' ', name or '')
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s or 'untitled'
 
 
 def year_of(meta):

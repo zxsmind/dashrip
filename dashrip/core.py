@@ -77,11 +77,13 @@ def resolve(cfg_obj, show_id):
             rel = item.get("relationships", {})
             if "edit" not in rel:
                 continue
-            edit_id = rel["edit"]["data"]["id"]
-            name = (item.get("attributes", {}) or {}).get("title", "")
+            attr = item.get("attributes", {}) or {}
+            # The catalog carries the title in `name` (not `title`); fall
+            # back to `title` for any item that still uses it.
+            name = attr.get("name") or attr.get("title") or ""
             if name.startswith(("trailer:", "short-preview:")):
                 continue
-            attr = item.get("attributes", {}) or {}
+            edit_id = rel["edit"]["data"]["id"]
             videos.append({
                 "editId": edit_id,
                 "vid": item.get("id"),
@@ -211,6 +213,20 @@ def cdn_base(mpd_url):
     return u.rsplit("/", 1)[0] + "/"
 
 
+def _xsd_duration(s):
+    """Parse an XMLSchema/ISO-8601 duration (PT22M18.647S, PT1H2M, P1DT2H)."""
+    m = re.match(r'^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?'
+                 r'(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$',
+                 (s or '').strip())
+    if not m:
+        return 0.0
+    days = float(m.group(1) or 0)
+    hours = float(m.group(2) or 0)
+    mins = float(m.group(3) or 0)
+    secs = float(m.group(4) or 0)
+    return days * 86400 + hours * 3600 + mins * 60 + secs
+
+
 def parse_mpd(mpd_xml):
     """Parse the DASH manifest.
 
@@ -308,10 +324,15 @@ def parse_mpd(mpd_xml):
     if not pssh_b64:
         raise RuntimeError('Widevine PSSH not found')
 
-    try:
-        mpd_dur = float(root.get('duration') or 0)
-    except (TypeError, ValueError):
-        mpd_dur = 0
+    mpd_dur = 0
+    d = root.get('duration')
+    if d:
+        try:
+            mpd_dur = float(d)
+        except ValueError:
+            mpd_dur = 0
+    if not mpd_dur:
+        mpd_dur = _xsd_duration(root.get('mediaPresentationDuration') or '')
     return {
         'video_base': v_bu,
         'video_id': v_id,

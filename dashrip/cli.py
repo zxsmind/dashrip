@@ -259,8 +259,9 @@ def choose_episodes(videos, spec=""):
     if not sel:
         return []
     total_min = sum(v["duration"] or 0 for v in sel) / 60000
-    print("Selected: %d episodes%s"
-          % (len(sel), " (~%.0f min total)" % total_min if total_min > 0
+    unit = "episode" if len(sel) == 1 else "episodes"
+    print("Selected: %d %s%s"
+          % (len(sel), unit, " (~%.0f min total)" % total_min if total_min > 0
              else ""))
     return sel
 
