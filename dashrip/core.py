@@ -4,8 +4,8 @@ HBO Max is fully automatic: show id -> playbackInfo -> MPD -> license ->
 content keys -> DASH download -> decrypt -> MKV. Amazon Prime is
 capture-assisted (see cli.prime).
 
-All per-user values (device file, cookie, playback template) come from
-dashrip.config. Nothing user-specific is hard-coded here.
+Per-user values (device file, cookie, playback template) are loaded
+from dashrip.config at startup.
 """
 
 import base64

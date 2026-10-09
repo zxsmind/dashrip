@@ -26,8 +26,7 @@ One command runs the whole pipeline: resolve the title, fetch the DASH
 manifest, request the Widevine license, download the media, decrypt it, remux
 to MKV, and file it into your library.
 
-- Audio and subtitle selection based on the tracks that actually exist for
-  that item. Nothing is hard-coded.
+- Audio and subtitle selection from the tracks that exist for that item.
 - A standard library layout (Jellyfin/Plex style):
 
   ```
