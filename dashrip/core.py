@@ -663,42 +663,71 @@ def ttml_to_srt(ttml):
 def parse_prime_har(har_path):
     """Read a browser HAR capture of a Prime playback.
 
-    Returns {"subs": [{code, name, url, format}], "mpd_url": str, "error": str}.
+    Extracts the subtitle tracks (timedTextUrls), the signed MPD URL with
+    the request headers that fetched it, the content id (titleId), and the
+    Widevine license exchange (challenge + license response). The exchange
+    lets dashrip derive the content keys locally, provided the capture was
+    made while the proxy ran in WVD mode with the configured device.
+
+    Returns a dict with keys: subs, mpd_url, mpd_headers, title_id,
+    challenge_b64, license_b64, error.
     """
+    res = {"subs": [], "mpd_url": "", "mpd_headers": [], "title_id": "",
+           "challenge_b64": "", "license_b64": "", "error": ""}
     try:
         with open(har_path, "r", encoding="utf-8") as f:
             har = json.load(f)
     except Exception as e:
-        return {"subs": [], "mpd_url": "", "error": "cannot read HAR: %r" % e}
-    res = {"subs": [], "mpd_url": "", "error": "", "title_id": ""}
+        res["error"] = "cannot read HAR: %r" % e
+        return res
     entries = har.get("log", {}).get("entries", [])
     for entry in entries:
-        url = entry.get("request", {}).get("url", "")
-        text = (entry.get("response", {}).get("content", {}) or {}).get("text") or ""
-        if "timedTextUrls" in text:
+        req = entry.get("request", {}) or {}
+        url = req.get("url", "")
+        text = ((entry.get("response", {}).get("content", {}) or {})
+                .get("text")) or ""
+        if "timedTextUrls" in text and not res["subs"]:
             try:
                 body = json.loads(text)
             except Exception:
-                continue
-            subs = (((body.get("timedTextUrls") or {}).get("result") or {})
-                    .get("subtitleUrls") or [])
-            out = [{"code": s.get("languageCode", ""),
-                    "name": s.get("displayName", ""),
-                    "url": s.get("url", ""),
-                    "format": s.get("format", "")} for s in subs]
-            if out:
-                res["subs"] = out
-                break
+                pass
+            else:
+                subs = (((body.get("timedTextUrls") or {}).get("result") or {})
+                        .get("subtitleUrls") or [])
+                if subs:
+                    res["subs"] = [{"code": s.get("languageCode", ""),
+                                     "name": s.get("displayName", ""),
+                                     "url": s.get("url", ""),
+                                     "format": s.get("format", "")}
+                                    for s in subs]
         if not res["mpd_url"] and ".mpd" in url:
             res["mpd_url"] = url
+            for h in req.get("headers", []) or []:
+                n = (h.get("name") or "")
+                v = (h.get("value") or "").strip()
+                if v and n.lower() in ("accept", "origin", "referer",
+                                       "user-agent"):
+                    res["mpd_headers"].append("%s: %s" % (n, v))
+        if "GetWidevineLicense" in url and not res["challenge_b64"]:
+            try:
+                pd = req.get("postData") or {}
+                res["challenge_b64"] = \
+                    json.loads(pd.get("text") or "").get(
+                        "licenseChallenge") or ""
+            except Exception:
+                pass
+            try:
+                res["license_b64"] = (((json.loads(text).get(
+                    "widevineLicense") or {}).get("license")) or "")
+            except Exception:
+                pass
     # content id: prefer the playback/license requests, then any entry
     for pref in (True, False):
         for entry in entries:
-            url = entry.get("request", {}).get("url", "")
+            url = (entry.get("request", {}) or {}).get("url", "")
             if "titleId=" not in url:
                 continue
-            is_playback = "Playback" in url or "Widevine" in url
-            if is_playback != pref:
+            if ("Playback" in url or "Widevine" in url) != pref:
                 continue
             m = re.search(r"titleId=([A-Za-z0-9.\-]+)", url)
             if m:
@@ -706,10 +735,11 @@ def parse_prime_har(har_path):
                 break
         if res["title_id"]:
             break
-    if not res["subs"] and not res["error"]:
+    if not res["mpd_url"]:
+        res["error"] = "no signed MPD request found in this HAR"
+    elif not res["subs"]:
         res["error"] = "no timedTextUrls found in this HAR"
     return res
-
 
 def fetch_prime_meta(title_id):
     """Fetch title/year/poster for a Prime content id (GTI).
@@ -758,3 +788,69 @@ def fetch_prime_meta(title_id):
     if ep:
         res["episode"] = ep
     return res
+
+
+def prime_keys_from_har(har_path, wvd_path):
+    """Derive the content keys from a Prime HAR capture.
+
+    The capture must have been made while the WidevineProxy ran in WVD
+    mode with the same device file (the license then answers that
+    device). The challenge and license from the HAR are replayed against
+    a local session; no network access is involved.
+
+    Returns ({kid_hex: key_hex}, None) on success, (None, message) on
+    failure.
+    """
+    h = parse_prime_har(har_path)
+    if h.get("error", "").startswith("cannot read HAR"):
+        return None, h["error"]
+    if not h.get("challenge_b64") or not h.get("license_b64"):
+        return None, ("no Widevine license exchange in this HAR; capture "
+                      "while the proxy runs in WVD mode with this device")
+    from pywidevine.device import Device
+    from pywidevine.cdm import Cdm
+    from pywidevine.license_protocol_pb2 import SignedMessage, License
+    try:
+        sm = SignedMessage()
+        sm.ParseFromString(base64.b64decode(h["challenge_b64"]))
+        inner = sm.msg
+        lic_bytes = base64.b64decode(h["license_b64"])
+        ls = SignedMessage()
+        ls.ParseFromString(lic_bytes)
+        lic = License()
+        lic.ParseFromString(ls.msg)
+        req_id = lic.id.request_id
+    except Exception as e:
+        return None, "unparseable license exchange: %r" % e
+    enc_ctx = b"ENCRYPTION\x00" + inner + (16 * 8).to_bytes(4, "big")
+    mac_ctx = b"AUTHENTICATION\x00" + inner + (32 * 8 * 2).to_bytes(4, "big")
+    try:
+        cdm = Cdm.from_device(Device.load(wvd_path))
+    except Exception as e:
+        return None, "cannot load device: %r" % e
+    sid = cdm.open()
+    try:
+        cdm._Cdm__sessions[sid].context[req_id] = (enc_ctx, mac_ctx)
+        cdm.parse_license(sid, lic_bytes)
+        keys = {}
+        for k in cdm.get_keys(sid):
+            kid = k.kid
+            if not isinstance(kid, str):
+                h = getattr(kid, "hex", None)
+                kid = h() if callable(h) else h
+                if not isinstance(kid, str):
+                    kid = str(kid).replace("-", "")
+            key = k.key
+            if not isinstance(key, str):
+                key = key.hex()
+            keys[kid] = key
+    except ValueError:
+        return None, ("license was not issued for this device; capture "
+                      "while the proxy runs in WVD mode using this .wvd")
+    except Exception as e:
+        return None, "key extraction failed: %r" % e
+    finally:
+        cdm.close(sid)
+    if not keys:
+        return None, "license parsed but no keys came out"
+    return keys, None

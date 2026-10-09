@@ -68,14 +68,21 @@ Unlike Max, Prime's playback sessions are **one-shot**:
 
 Consequences:
 
-- A headless "capture the HAR, replay later" pipeline is **not possible**
-  for Prime — the tokens are dead the moment the browser uses them.
+- A session cannot be replayed: the tokens are dead the moment the
+  browser uses them.
 - The working approach is **capture-assisted**: the browser performs the
   real playback (creating + consuming a live session), and a Widevine
   proxy (browser extension with a `.wvd` device) intercepts the EME flow
   so that *your* device generates the challenge and receives the license
   **inside the live session**. The extension can then hand you a
   ready-made download command (MPD + headers + keys).
+- When the proxy runs in **WVD mode** (your `.wvd` is the CDM, not the
+  browser's), the HAR of that playback carries the full license exchange.
+  The keys can then be derived offline from the HAR alone, so a single
+  HAR file is the complete input: MPD url + headers, keys, subtitles,
+  and the content id.
+- The signed MPD url stays valid for about 30 minutes; after that a
+  fresh capture is needed.
 - Subtitles are **not in the MPD**; they come from a separate
   `timedTextUrls` list (TTML) in the playback-resources response.
 

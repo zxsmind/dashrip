@@ -110,24 +110,29 @@ Series episodes: `--ep 1-6`, `--ep S01E02`, and so on.
 ### `prime` (capture-assisted)
 
 Amazon's player uses single-use, device-bound playback sessions, so a fully
-headless pipeline is not possible. The supported flow:
+headless pipeline is not possible. One short browser playback is the input;
+everything after that is automatic.
 
-1. In the browser, with a Widevine proxy extension and your `.wvd` loaded,
-   play the content for about 10 seconds.
-2. Copy the ready-made N_m3u8DL-RE command from the extension's History.
-3. Run `python -m dashrip prime` and paste it.
+HAR flow (no pasting, no typing):
 
-Subtitles are not in the MPD; Amazon serves them from a separate channel
-in the playback response. To include them, keep DevTools open (Network tab,
-"Preserve log" checked) while playing, and save the capture with
-"Save all as HAR with content". Offer that file when `prime` asks. dashrip
-lists the subtitle tracks it captured (30+ languages), converts the ones you
-pick (TTML to SRT), and embeds them in the MKV.
+1. In the browser, with a Widevine proxy extension loaded with your `.wvd`
+   in WVD mode, play the content for about 10 seconds.
+2. Save the DevTools network capture: right click -> "Save all as HAR with
+   content".
+3. Run `python -m dashrip prime capture.har`.
 
-The capture also carries the content id, so the title, year, and poster are
-resolved automatically from Prime's public detail page; nothing about the
-item has to be typed. Without a HAR the item is still fully supported;
-dashrip asks for the name instead.
+The HAR carries the signed MPD url with its request headers, the Widevine
+license exchange (the keys are derived from it with your device), the
+subtitle tracks, and the content id. The title, year, and poster are
+resolved from Prime's public detail page.
+
+Paste-a-command flow: same capture, but copy the ready-made N_m3u8DL-RE
+command from the extension's History and paste it when asked. Offer the
+HAR as well to keep subtitles and the automatic title/year. The HAR yields
+the keys only when the proxy ran in WVD mode with the device from your
+config; otherwise the keys come from the pasted command.
+
+MPD urls expire after about 30 minutes; recapture for another run.
 
 dashrip then downloads, decrypts, verifies, files, and records the result.
 See [docs/platform-notes.md](docs/platform-notes.md).

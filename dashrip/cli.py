@@ -760,23 +760,25 @@ def cmd_init(args):
 # ------------------------- command: prime -------------------------
 
 PRIME_STEPS = """
-Amazon Prime is capture-assisted: the browser (with the WidevineProxy
-extension + a .wvd device) performs one short playback, and you paste the
-ready-made command from the extension's History. dashrip then downloads,
-decrypts, renames and files everything automatically.
+Amazon Prime is capture-assisted: the browser performs one short playback,
+and dashrip downloads, decrypts and files the content.
 
- 1. In the browser: install the WidevineProxy extension, enable it,
-    load your .wvd device, pick the content, and play it for ~10 s.
- 2. Open the extension's History, open the captured entry, and press
-    "copy" on the Command line (an N_m3u8DL-RE command).
- 3. Paste that command below.
+HAR flow (no pasting)
+  1. Browser: WidevineProxy extension enabled, loaded with your .wvd
+     device in WVD mode. Pick the content and play it for ~10 s.
+  2. F12 -> Network -> right click -> "Save all as HAR with content".
+  3. python -m dashrip prime <file.har>
+     The MPD url, the keys, the subtitle tracks and the
+     title/year/poster all come from the HAR.
 
- Optional: with F12 open (Network tab, "Preserve log"), save the playback
- as "HAR with content". If you offer the file when asked, dashrip lists the
- subtitle tracks it captured (30+ languages), converts the ones you pick,
- and embeds them in the MKV. The capture also carries the content id, so
- the title, year, and poster are resolved automatically from Prime's
- public detail page; you are not asked to type them.
+Paste-a-command flow
+  Steps 1-2 as above, then open the extension's History and copy the
+  Command of the captured entry. Paste it when asked. Offer the HAR as
+  well to keep subtitles and the automatic title/year.
+
+The HAR yields the keys only when the proxy ran in WVD mode with the
+device from your config; otherwise the keys come from the pasted command.
+MPD urls expire after ~30 minutes, so recapture if a download fails.
 """
 
 
@@ -847,43 +849,67 @@ def cmd_prime(args):
         print("config (key: nm3u8dlre), or install it via the extension.")
         return 1
     print(PRIME_STEPS)
-    line = input("Paste the N_m3u8DL-RE command: ").strip()
-    if not line:
-        print("Nothing to do.")
-        return 1
-    parsed = _parse_n3u_cmd(line)
-    if not parsed["url"]:
-        print("Could not find the MPD URL in that command.")
-        return 1
-    log("MPD: %s" % parsed["url"][:100] + "...")
-    log("keys captured: %d" % len(parsed["keys"]))
-    har_path = input("HAR file (optional, subtitles + title) [blank]: ") \
-        .strip().strip('"')
-    har_subs = []
-    prime_meta = {}
+    wvd = (cfg.get("wvd") or "").strip()
+
+    har_path = (args.har or "").strip().strip('"')
+    if not har_path:
+        har_path = input("HAR file (full automation; blank = paste a "
+                         "command): ").strip().strip('"')
+
+    mpd_url, headers, har_subs, prime_meta, keys = "", [], [], {}, {}
+    parsed = None
     if har_path:
         if not os.path.exists(har_path):
-            log("  HAR not found: %s (continuing without subtitles)" % har_path)
-        else:
-            h = K.parse_prime_har(har_path)
-            if h["error"]:
-                log("  HAR: %s (continuing without subtitles)" % h["error"])
+            log("HAR not found: %s" % har_path)
+            har_path = ""
+    if har_path:
+        h = K.parse_prime_har(har_path)
+        if h["error"]:
+            log("  HAR: %s" % h["error"])
+        har_subs = h["subs"]
+        mpd_url = h["mpd_url"]
+        headers = h["mpd_headers"]
+        if har_subs:
+            log("  HAR: %d subtitle tracks available" % len(har_subs))
+        if h.get("title_id"):
+            prime_meta = K.fetch_prime_meta(h["title_id"])
+            if prime_meta.get("title"):
+                yr = prime_meta.get("year", "")
+                log("  title: %s%s" % (prime_meta["title"],
+                     " (%s)" % yr if yr else ""))
             else:
-                har_subs = h["subs"]
-                log("  HAR: %d subtitle tracks available" % len(har_subs))
-                if h.get("title_id"):
-                    prime_meta = K.fetch_prime_meta(h["title_id"])
-                    if prime_meta.get("title"):
-                        yr = prime_meta.get("year", "")
-                        log("  title: %s%s" % (prime_meta["title"],
-                             " (%s)" % yr if yr else ""))
-                    else:
-                        log("  could not resolve the title from Prime; "
-                            "will ask")
+                log("  could not resolve the title from Prime; will ask")
+        if wvd:
+            keys, kerr = K.prime_keys_from_har(har_path, wvd)
+            if kerr:
+                log("  keys from HAR: %s" % kerr)
+            else:
+                log("  keys: %d extracted from the HAR" % len(keys))
+        else:
+            log("  no device file configured (config key: wvd); the keys "
+                "come from the command")
+
+    if not mpd_url or not keys:
+        line = input("Paste the N_m3u8DL-RE command: ").strip()
+        if not line:
+            print("Nothing to do.")
+            return 1
+        parsed = _parse_n3u_cmd(line)
+        if not parsed["url"]:
+            print("Could not find the MPD URL in that command.")
+            return 1
+        if not mpd_url:
+            mpd_url = parsed["url"]
+        if not headers:
+            headers = parsed["headers"]
+        if not keys:
+            keys = parsed["keys"]
+    log("MPD: %s..." % mpd_url[:100])
+
     try:
-        vids, auds = _probe_prime_mpd(cfg, parsed["url"], parsed["headers"])
+        vids, auds = _probe_prime_mpd(cfg, mpd_url, headers)
     except Exception as e:
-        log("  could not probe the MPD (%r); will ask N_m3u8DL-RE to pick" % e)
+        log("could not probe the MPD (%r); will ask N_m3u8DL-RE to pick" % e)
         vids, auds = [], []
     if vids:
         print("  qualities: %s" % ", ".join(v[1] for v in vids))
@@ -896,7 +922,15 @@ def cmd_prime(args):
     else:
         a = ""
 
-    extra = list(parsed["extra"])
+    extra = []
+    if parsed is not None:
+        i, n = 0, len(parsed["extra"])
+        while i < n:
+            if parsed["extra"][i] == "-M":
+                i += 2
+                continue
+            extra.append(parsed["extra"][i])
+            i += 1
     if q:
         extra += ["-sv", 'res="%s*":for=best' % q.split("x")[0]]
     elif any(v[1].startswith("1280") for v in vids):
@@ -922,25 +956,20 @@ def cmd_prime(args):
     run_dir = os.path.join(_workdir(), "prime_%s" % time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(run_dir, exist_ok=True)
     work = run_dir
-    # drop any -M pair coming from the pasted command (added once, below)
-    kept, i = [], 0
-    while i < len(extra):
-        if extra[i] == "-M":
-            i += 2
-            continue
-        kept.append(extra[i])
-        i += 1
-    cmd = [exe, parsed["url"]]
-    for h in parsed["headers"]:
+    cmd = [exe, mpd_url]
+    for h in headers:
         cmd += ["-H", h]
-    for k, v in parsed["keys"].items():
+    for k, v in keys.items():
         cmd += ["--key", "%s:%s" % (k, v)]
-    cmd += kept + ["-M", "format=mkv", "--save-dir", work]
-    log("running: N_m3u8DL-RE + %d header + %d keys (720p/en) ..."
-        % (len(parsed["headers"]), len(parsed["keys"])))
+    cmd += extra + ["-M", "format=mkv", "--save-dir", work]
+    log("running: N_m3u8DL-RE + %d headers + %d keys"
+        % (len(headers), len(keys)))
     r = subprocess.run(cmd, cwd=work)
     if r.returncode != 0:
         print("N_m3u8DL-RE exited with %d" % r.returncode)
+        if parsed is None:
+            log("if this HAR is older than ~30 minutes, the MPD url has "
+                "expired; make a fresh capture")
         return 1
     mkv = None
     for f in os.listdir(work):
@@ -1029,7 +1058,6 @@ def cmd_prime(args):
     print("Delivered: %s" % final)
     return 0
 
-
 # ------------------------- command: sync -------------------------
 
 def cmd_sync(args):
@@ -1069,6 +1097,8 @@ def build_parser():
     pm.add_argument("--debug", action="store_true",
                      help="print full tracebacks on errors")
     pp = sub.add_parser("prime", help="rip an Amazon Prime capture")
+    pp.add_argument("har", nargs="?", default="",
+                    help="HAR capture (full automation, no pasting)")
     ps = sub.add_parser("sync", help="lossless resumable folder transfer")
     ps.add_argument("--src", help="local source dir")
     ps.add_argument("--host", help="ssh host")
