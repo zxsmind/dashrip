@@ -84,7 +84,7 @@ Rules that matter:
   secret) — aliasing them is wrong and useless.
 - **Skip all-zero keys** — they are the "no key for this tier" markers,
   not content.
-- The original KID is preserved (it is just one of the six variants).
+- The original KID is preserved (it is one of the six variants).
 
 After aliasing, any tier-variant KID in the manifest finds its key, and
 the decryptor is agnostic to which tier the manifest used.

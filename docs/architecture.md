@@ -144,4 +144,4 @@ half-files in the library.
 but shares the same philosophy: **verify everything**. Every file is
 SHA-256-hashed locally, compared to the remote state, copied with scp,
 and re-hashed remotely. The checkpoint (per src/target pair) makes any
-run — after sleep, network drop, or corruption — safe to simply re-run.
+run — after sleep, network drop, or corruption — safe to re-run.

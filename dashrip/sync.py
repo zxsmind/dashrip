@@ -11,7 +11,7 @@ Strategy
 * Speed: the built-in OpenSSH ``scp`` client (much faster than an SFTP
   write loop; no extra software needed on either side).
 
-Implementation notes (hard-won)
+Implementation notes
 -------------------------------
 * Windows OpenSSH scp does NOT strip single quotes from the remote path
   (they arrive literally), so the remote path is passed to scp UNQUOTED

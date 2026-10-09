@@ -1,6 +1,6 @@
 # Platform notes
 
-Hard-won observations about the two supported platforms, with the
+Observations about the two supported platforms, with the
 evidence behind each. These notes explain *why* the pipeline is shaped the
 way it is, and what to expect when a platform changes.
 
@@ -19,7 +19,7 @@ way it is, and what to expect when a platform changes.
   version, IAB string, ...). Only the **editId** changes per item — the
   rest of the template works as captured.
 
-### Media delivery (unusual, in your favor)
+### Media delivery
 
 - Content tracks are **single complete files** (SegmentBase, one BaseURL
   per representation). No segment loop, no playlist refresh.
@@ -49,7 +49,7 @@ GetWidevineLicense  POST  -> license (content keys)
 - The player is a Web SDK (`ATVWebPlayerSDK-*`); the device type is
   reported as a web player id (e.g. `AOAGZA014O5RE`).
 - Media segments are **signed URLs** (token in query string) — like Max,
-  the CDN does not check the cookie. Download side is easy.
+  the CDN does not check the cookie.
 - The license POST is `text/plain` JSON containing four fields:
   `includeHdcpTestKey`, `playbackEnvelope`, `sessionHandoffToken`, and
   `licenseChallenge` (the CDM's own request).
