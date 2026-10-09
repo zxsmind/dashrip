@@ -124,6 +124,11 @@ in the playback response. To include them, keep DevTools open (Network tab,
 lists the subtitle tracks it captured (30+ languages), converts the ones you
 pick (TTML to SRT), and embeds them in the MKV.
 
+The capture also carries the content id, so the title, year, and poster are
+resolved automatically from Prime's public detail page; nothing about the
+item has to be typed. Without a HAR the item is still fully supported;
+dashrip asks for the name instead.
+
 dashrip then downloads, decrypts, verifies, files, and records the result.
 See [docs/platform-notes.md](docs/platform-notes.md).
 

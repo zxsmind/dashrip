@@ -774,7 +774,9 @@ decrypts, renames and files everything automatically.
  Optional: with F12 open (Network tab, "Preserve log"), save the playback
  as "HAR with content". If you offer the file when asked, dashrip lists the
  subtitle tracks it captured (30+ languages), converts the ones you pick,
- and embeds them in the MKV.
+ and embeds them in the MKV. The capture also carries the content id, so
+ the title, year, and poster are resolved automatically from Prime's
+ public detail page; you are not asked to type them.
 """
 
 
@@ -855,9 +857,10 @@ def cmd_prime(args):
         return 1
     log("MPD: %s" % parsed["url"][:100] + "...")
     log("keys captured: %d" % len(parsed["keys"]))
-    har_path = input("HAR file (optional, enables subtitles) [blank]: ") \
+    har_path = input("HAR file (optional, subtitles + title) [blank]: ") \
         .strip().strip('"')
     har_subs = []
+    prime_meta = {}
     if har_path:
         if not os.path.exists(har_path):
             log("  HAR not found: %s (continuing without subtitles)" % har_path)
@@ -868,6 +871,15 @@ def cmd_prime(args):
             else:
                 har_subs = h["subs"]
                 log("  HAR: %d subtitle tracks available" % len(har_subs))
+                if h.get("title_id"):
+                    prime_meta = K.fetch_prime_meta(h["title_id"])
+                    if prime_meta.get("title"):
+                        yr = prime_meta.get("year", "")
+                        log("  title: %s%s" % (prime_meta["title"],
+                             " (%s)" % yr if yr else ""))
+                    else:
+                        log("  could not resolve the title from Prime; "
+                            "will ask")
     try:
         vids, auds = _probe_prime_mpd(cfg, parsed["url"], parsed["headers"])
     except Exception as e:
@@ -901,6 +913,11 @@ def cmd_prime(args):
                              [s["code"] for s in har_subs], True, "",
                              blank_none=True)
         sel_subs = [s for s in har_subs if s["code"] in picked]
+
+    want_poster = False
+    if prime_meta.get("poster"):
+        want_poster = input("Download poster? [Y/n]: ").strip().lower() \
+            in ("", "y", "yes")
 
     run_dir = os.path.join(_workdir(), "prime_%s" % time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(run_dir, exist_ok=True)
@@ -972,22 +989,37 @@ def cmd_prime(args):
 
     info = K.probe(cfg, mkv)
     dur = float(info.get("format", {}).get("duration") or 0)
-    title = input("Title (as shown on the player) [unknown]: ").strip() or "unknown"
+    def_title = prime_meta.get("title", "")
+    def_year = prime_meta.get("year", "")
+    title = input("Title [%s]: " % (def_title or "unknown")).strip() \
+        or def_title or "unknown"
+    ep_hint = prime_meta.get("episode") or {}
     is_series = input("Series? (y/N, only if this is an episode): ").strip().lower() \
         in ("y", "yes")
     meta = {}
     if not is_series:
-        yr = input("Year [blank]: ").strip()
+        yr = input("Year [%s]: " % (def_year or "blank")).strip() or def_year
         meta = {"premiereDate": yr + "-01-01"} if yr else {}
     v = {}
     if is_series:
-        v["season"] = int(input("Season [1]: ").strip() or 1)
-        v["episode"] = int(input("Episode [1]: ").strip() or 1)
-        v["name"] = input("Episode title [blank]: ").strip()
+        v["season"] = int(input("Season [%s]: " % ep_hint.get("season", 1)).strip()
+                           or ep_hint.get("season", 1))
+        v["episode"] = int(input("Episode [%s]: " % ep_hint.get("episode", 1)).strip()
+                            or ep_hint.get("episode", 1))
+        v["name"] = input("Episode title [%s]: "
+                          % (ep_hint.get("title") or "blank")).strip() \
+            or ep_hint.get("title", "")
     outdir = (cfg.get("outdir") or ".").strip() or "."
     os.makedirs(outdir, exist_ok=True)
     final = S.final_path(outdir, title, v, meta, False)
     os.makedirs(os.path.dirname(final), exist_ok=True)
+    if want_poster and prime_meta.get("poster"):
+        try:
+            K.fetch_image(cfg, prime_meta["poster"],
+                          os.path.join(os.path.dirname(final), "poster.jpg"))
+            log("  poster: downloaded")
+        except Exception as ex:
+            log("  poster: skipped (%s: %s)" % (type(ex).__name__, ex))
     shutil.move(mkv, final)
     S.manifest_append(outdir, S.make_entry(
         outdir, title, v, final, {"video_wh": ""}, info,

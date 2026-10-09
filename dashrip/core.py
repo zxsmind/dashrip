@@ -670,8 +670,9 @@ def parse_prime_har(har_path):
             har = json.load(f)
     except Exception as e:
         return {"subs": [], "mpd_url": "", "error": "cannot read HAR: %r" % e}
-    res = {"subs": [], "mpd_url": "", "error": ""}
-    for entry in har.get("log", {}).get("entries", []):
+    res = {"subs": [], "mpd_url": "", "error": "", "title_id": ""}
+    entries = har.get("log", {}).get("entries", [])
+    for entry in entries:
         url = entry.get("request", {}).get("url", "")
         text = (entry.get("response", {}).get("content", {}) or {}).get("text") or ""
         if "timedTextUrls" in text:
@@ -690,6 +691,70 @@ def parse_prime_har(har_path):
                 break
         if not res["mpd_url"] and ".mpd" in url:
             res["mpd_url"] = url
+    # content id: prefer the playback/license requests, then any entry
+    for pref in (True, False):
+        for entry in entries:
+            url = entry.get("request", {}).get("url", "")
+            if "titleId=" not in url:
+                continue
+            is_playback = "Playback" in url or "Widevine" in url
+            if is_playback != pref:
+                continue
+            m = re.search(r"titleId=([A-Za-z0-9.\-]+)", url)
+            if m:
+                res["title_id"] = m.group(1)
+                break
+        if res["title_id"]:
+            break
     if not res["subs"] and not res["error"]:
         res["error"] = "no timedTextUrls found in this HAR"
+    return res
+
+
+def fetch_prime_meta(title_id):
+    """Fetch title/year/poster for a Prime content id (GTI).
+
+    Uses the public detail page; no authentication is required.
+    Returns {"title", "year", "poster", "episode"} (empty on failure).
+    """
+    res = {"title": "", "year": "", "poster": "", "episode": None}
+    url = "https://www.primevideo.com/detail/%s" % title_id
+    try:
+        r = requests.get(url, headers={"User-Agent": UA}, timeout=30,
+                         allow_redirects=True)
+    except Exception:
+        return res
+    if r.status_code != 200:
+        return res
+    t = r.text
+    m = re.search(re.escape(title_id) +
+                  r'"?\s*:\s*\{\s*"title"\s*:\s*"([^"]{1,120})"', t)
+    if m:
+        res["title"] = m.group(1)
+    else:
+        m = re.search(r'<meta name="title" content="Watch (.+?) online', t)
+        if m:
+            res["title"] = m.group(1).strip()
+        else:
+            m = re.search(r"<title>Prime Video:\s*([^<]{2,120})</title>", t)
+            if m:
+                res["title"] = m.group(1).strip()
+    m = re.search(r'"releaseYear"\s*:\s*(\d{4})', t)
+    if m:
+        res["year"] = m.group(1)
+    m = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', t)
+    if m:
+        res["poster"] = m.group(1)
+    ep = {}
+    m = re.search(r'"seasonNumber"\s*:\s*(\d+)', t)
+    if m:
+        ep["season"] = int(m.group(1))
+    m = re.search(r'"episodeNumber"\s*:\s*(\d+)', t)
+    if m:
+        ep["episode"] = int(m.group(1))
+    m = re.search(r'"episodeTitle"\s*:\s*"([^"]{1,120})"', t)
+    if m:
+        ep["title"] = m.group(1)
+    if ep:
+        res["episode"] = ep
     return res
