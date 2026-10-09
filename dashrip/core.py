@@ -333,8 +333,14 @@ def get_keys(cfg_obj, pssh, service_cert, lic_url):
     cdm = Cdm.from_device(dev)
     sid = cdm.open()
     try:
-        if service_cert:
-            cdm.set_service_certificate(sid, service_cert)
+        cert = service_cert
+        if not cert:
+            sc = cfg.get(cfg_obj, "service_cert")
+            if sc and os.path.isfile(sc):
+                with open(sc, "rb") as f:
+                    cert = f.read()
+        if cert:
+            cdm.set_service_certificate(sid, cert)
         pssh_obj = PSSH(pssh)
         challenge = cdm.get_license_challenge(sid, pssh_obj)
         h = {"User-Agent": UA, "Origin": ORIGIN,
@@ -345,9 +351,11 @@ def get_keys(cfg_obj, pssh, service_cert, lic_url):
         r = requests.post(lic_url, headers=h, data=challenge, timeout=60)
         if r.status_code != 200:
             raise RuntimeError("license request failed: HTTP %s" % r.status_code)
-        lic = cdm.parse_license(sid, r.content)
+        # parse_license stores the keys in the session and returns None
+        # (pywidevine >= 1.9); read them back with cdm.get_keys.
+        cdm.parse_license(sid, r.content)
         keys = {}
-        for k in lic.keys:
+        for k in cdm.get_keys(sid):
             keys[k.kid.hex] = k.key.hex() if k.key else "0" * 32
         return keys
     finally:
@@ -385,47 +393,74 @@ def keys_arg(keys):
 def dl(cfg_obj, url, path, max_bps=0):
     """Download with resume (.part), Range support and throttling.
 
-    max_bps in bytes/sec, 0 = unlimited. Returns (new_bytes, total).
+    Transient failures (CDN edge hiccups, dropped streams) are retried
+    with a short backoff, resuming from the .part file. max_bps in
+    bytes/sec, 0 = unlimited. Returns (new_bytes, total).
     """
     part = path + ".part"
-    pos = os.path.getsize(part) if os.path.exists(part) else 0
+    start_pos = os.path.getsize(part) if os.path.exists(part) else 0
     h = {"User-Agent": UA, "Origin": ORIGIN, "Referer": ORIGIN + "/"}
     cookie = cfg.get(cfg_obj, "cookie")
     if cookie:
         h["Cookie"] = cookie
-    if pos:
-        h["Range"] = "bytes=%d-" % pos
-    r = requests.get(url, headers=h, stream=True, timeout=60)
-    if r.status_code not in (200, 206):
-        raise RuntimeError("download failed: HTTP %s" % r.status_code)
-    if r.status_code == 200:
-        pos = 0
     total = None
-    cr = r.headers.get("Content-Range")
-    if cr and "/" in cr:
-        total = int(cr.rsplit("/", 1)[1])
-    elif r.status_code == 200:
-        total = int(r.headers.get("Content-Length", 0)) or None
-    mode = "ab" if pos else "wb"
-    done = pos
-    last_log = time.time()
-    with open(part, mode) as f:
-        for chunk in r.iter_content(1 << 20):
-            if not chunk:
+    for attempt in range(6):
+        pos = os.path.getsize(part) if os.path.exists(part) else 0
+        hh = dict(h)
+        if pos:
+            hh["Range"] = "bytes=%d-" % pos
+        r = None
+        try:
+            r = requests.get(url, headers=hh, stream=True, timeout=60)
+            if r.status_code == 416:
+                # stale .part (pos >= file size): restart from zero
+                r.close()
+                os.remove(part)
                 continue
-            f.write(chunk)
-            done += len(chunk)
-            if max_bps:
-                time.sleep(len(chunk) / max_bps)
-            if time.time() - last_log > 5:
-                done_mb = done // (1 << 20)
-                tot = " / %dMB" % (total // (1 << 20)) if total else ""
-                log("  dl %s%s ... %d%%" % (
-                    os.path.basename(path)[:40], tot,
-                    done * 100 // total if total else -1))
-                last_log = time.time()
+            if r.status_code not in (200, 206):
+                raise RuntimeError("HTTP %s" % r.status_code)
+            if r.status_code == 200:
+                pos = 0
+            cr = r.headers.get("Content-Range")
+            if cr and "/" in cr:
+                total = int(cr.rsplit("/", 1)[1])
+            elif r.status_code == 200:
+                total = int(r.headers.get("Content-Length", 0)) or None
+            mode = "ab" if pos else "wb"
+            done = pos
+            last_log = time.time()
+            with open(part, mode) as f:
+                for chunk in r.iter_content(1 << 20):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    done += len(chunk)
+                    if max_bps:
+                        time.sleep(len(chunk) / max_bps)
+                    if time.time() - last_log > 5:
+                        done_mb = done // (1 << 20)
+                        tot = " / %dMB" % (total // (1 << 20)) if total else ""
+                        log("  dl %s%s ... %d%%" % (
+                            os.path.basename(path)[:40], tot,
+                            done * 100 // total if total else -1))
+                        last_log = time.time()
+            r.close()
+            break
+        except Exception as ex:
+            if r is not None:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+            if attempt == 5:
+                raise RuntimeError(
+                    "download failed after 6 attempts: %s" % ex)
+            wait = 3 + attempt * 2
+            log("  dl %s: %s -- retry %d/6 in %ds" % (
+                os.path.basename(path)[:40], ex, attempt + 1, wait))
+            time.sleep(wait)
     os.replace(part, path)
-    return done - pos, total
+    return os.path.getsize(path) - start_pos, total
 
 
 def shaka_decrypt(cfg_obj, inp, out, kind, keys):

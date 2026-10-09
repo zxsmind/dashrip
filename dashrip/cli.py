@@ -218,6 +218,16 @@ def parse_ep_spec(spec, videos):
     return out
 
 
+def series_videos(videos):
+    """Drop unnumbered video items (trailers, extras) from a series list.
+
+    Movies consist entirely of unnumbered items, so this filter is only
+    applied when the resolved show is a series.
+    """
+    return [v for v in videos
+            if v["season"] is not None or v["episode"] is not None]
+
+
 def choose_episodes(videos, spec=""):
     seasons = sorted(set(v["season"] for v in videos if v["season"] is not None))
     print("Total %d episodes." % len(videos))
@@ -225,9 +235,10 @@ def choose_episodes(videos, spec=""):
         sel = parse_ep_spec(spec, videos)
     elif len(seasons) <= 1:
         for v in videos[:30]:
-            print("  E%-3d %s  (%.0f min)" % (v["episode"] or 0,
-                                              (v["name"] or "")[:52],
-                                              (v["duration"] or 0) / 60000))
+            d = (v["duration"] or 0) / 60000
+            print("  E%-3d %s  %s" % (v["episode"] or 0,
+                                      (v["name"] or "")[:52],
+                                      "(%.0f min)" % d if d > 0 else "(--)"))
         if len(videos) > 30:
             print("  ... %d more" % (len(videos) - 30))
         spec = input("All, or a selection? (blank = all; e.g. 1-6, 1 3 5) ").strip()
@@ -247,8 +258,10 @@ def choose_episodes(videos, spec=""):
             sel = parse_ep_spec(spec, videos)
     if not sel:
         return []
-    print("Selected: %d episodes (~%.0f min total)"
-          % (len(sel), sum(v["duration"] or 0 for v in sel) / 60000))
+    total_min = sum(v["duration"] or 0 for v in sel) / 60000
+    print("Selected: %d episodes%s"
+          % (len(sel), " (~%.0f min total)" % total_min if total_min > 0
+             else ""))
     return sel
 
 
@@ -357,7 +370,7 @@ def rip_item(cfg, title, v, audios, subs, mode, outdir, meta,
         for i, num in enumerate(tr["nums"]):
             url = tr["template"].replace("$Number$", str(num))
             sp = os.path.join(dirp, "sub_%s_%d.vtt" % (tr["lang"], i))
-            K.dl(cfg, base + tr["base"] + "/" + url, sp, max_bps)
+            K.dl(cfg, base + url, sp, max_bps)
             segs.append(sp)
         merged = K.merge_subs(cfg, [(sp, "ep") for sp in segs])["ep"]
         vp = os.path.join(dirp, "subs_%s.vtt" % tr["lang"])
@@ -457,6 +470,7 @@ def cmd_max(args):
             show_poster, ep_posters = K.show_images(cfg, sid)
             is_series = any(v["season"] is not None for v in videos)
             if is_series:
+                videos = series_videos(videos)
                 sel = choose_episodes(videos, spec=args.ep)
             else:
                 sel = [max(videos, key=lambda v: v["duration"] or 0)]
@@ -503,8 +517,10 @@ def cmd_max(args):
                     results.append((label, st))
                     log("  [%d/%d] done: %s" % (i, len(sel), final))
                 except Exception as ex:
-                    import traceback
-                    traceback.print_exc()
+                    if getattr(args, "debug", False):
+                        import traceback
+                        traceback.print_exc()
+                    log("  ERROR: %s: %s" % (type(ex).__name__, ex))
                     label = ("%s - %s" % (title, v.get("name") or ""))[:56]
                     results.append((label, "ERROR: %s" % ex))
                 if i < len(sel):
@@ -900,6 +916,8 @@ def build_parser():
                     help="poster policy: yes/no (blank = ask)")
     pm.add_argument("--ep", default="", help="episode spec, e.g. 1-6 or S01E02")
     pm.add_argument("--outdir", default="", help="output directory")
+    pm.add_argument("--debug", action="store_true",
+                     help="print full tracebacks on errors")
     pp = sub.add_parser("prime", help="rip an Amazon Prime capture")
     ps = sub.add_parser("sync", help="lossless resumable folder transfer")
     ps.add_argument("--src", help="local source dir")
