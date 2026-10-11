@@ -43,10 +43,10 @@ to MKV, and file it into your library.
 - `sync`: a resumable, SHA-256-verified folder transfer for moving a finished
   library to a server or NAS.
 - Defaults for the track prompts (`defaults` in `config/dashrip.json`): the
-  choices applied when a prompt is left blank. The `orig` pseudo-code stands
-  for the content's original language; for example
-  `"audio": ["orig", "tr"]` keeps the original track plus a Turkish dub when
-  one exists.
+  choices applied when a prompt is left blank. Entries are ISO 639-1 language
+  codes; the `orig` pseudo-code stands for the content's original language.
+  For example `"audio": ["orig", "en"]` keeps the original track plus the
+  English dub when one exists.
 
 ## Requirements
 
@@ -93,7 +93,7 @@ $ python -m dashrip max
 > the dark knight          (title, URL, or show UUID)
 > .
 Output directory [default]:
-  video: 1280x534 | audio: en-US, tr | subs: en-US, tr
+  video: 1280x534 | audio: en-US, en-GB | subs: en-US, de
   which audio to include? (blank = all)
   which subs to include?  (blank = all, n = none)
   embed in MKV (1) or sidecar files (2)?
@@ -106,7 +106,7 @@ Non-interactive:
 
 ```bash
 python -m dashrip max "inception" "tenet" \
-    --audio tr,en --subs tr,en --embed 1 --poster yes \
+    --audio en,de --subs en,de --embed 1 --poster yes \
     --outdir D:/Media
 ```
 
@@ -140,8 +140,6 @@ config; otherwise the keys come from the pasted command.
 MPD urls expire after about 30 minutes; recapture for another run.
 
 dashrip then downloads, decrypts, verifies, files, and records the result.
-If a Turkish dub exists for the content and it is not the track you selected,
-it is fetched and added as an extra audio track (no re-encode).
 See [docs/platform-notes.md](docs/platform-notes.md).
 
 ## How it works
