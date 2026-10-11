@@ -179,14 +179,13 @@ def playback(cfg_obj, edit_id):
         body = body.replace(tmpl, edit_id)
     else:
         # fall back to replacing the last quoted 8-4-4-4-12 uuid in the body
-        m = None
-        for m in re.finditer(r'"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}'
-                             r'-[0-9a-f]{4}-[0-9a-f]{12}"', body):
-            pass
-        if m:
-            body = body[:m.start()] + '"%s"' % edit_id + body[m.end():]
-        else:
+        uuids = list(re.finditer(
+            r'"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"',
+            body, re.I))
+        if not uuids:
             raise RuntimeError("cannot locate edit id in playback body")
+        m = uuids[-1]
+        body = body[:m.start()] + '"%s"' % edit_id + body[m.end():]
     headers = {"User-Agent": UA, "Origin": ORIGIN,
                "Referer": ORIGIN + "/", "Content-Type": "application/json"}
     for k, v in (cfg.get(cfg_obj, "playback.headers") or {}).items():
@@ -596,7 +595,10 @@ def mux(cfg_obj, out, vdec, aud, subfiles):
                 "language=" + (lg[:2] or "und")]
         si += 1
     cmd += ["-c:v", "copy", "-c:a", "copy", "-c:s", "webvtt", out]
-    subprocess.run(cmd, check=True, capture_output=True)
+    p = subprocess.run(cmd, capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError("ffmpeg mux failed (rc=%d): %s" % (
+            p.returncode, p.stderr.decode("utf-8", "replace")[-800:]))
 
 
 def quick_decode(cfg_obj, path, seconds=15):
@@ -650,8 +652,10 @@ def _ms_to_srt_ts(ms):
 def ttml_to_srt(ttml):
     """Convert Prime TTML (IMSC1) to SRT text. Returns "" if no cues found.
 
-    Supports begin/end and begin/dur cues, <br> line breaks, <span> markup
-    (tags stripped, text kept) and HTML entities.
+    Every ``<p>`` may use ``begin``/``end`` or ``begin``/``dur``; both are
+    handled per cue, so a document that mixes the two keeps all its cues.
+    Supports ``<br>`` line breaks, ``<span>`` markup (tags stripped, text
+    kept) and HTML entities.
     """
     import html as _html
     cues = []
@@ -661,20 +665,27 @@ def ttml_to_srt(ttml):
         body = re.sub(r'<[^>]+>', '', body)
         return _html.unescape(body).strip()
 
-    for m in re.finditer(
-            r'<p\b[^>]*\bbegin="([^"]+)"[^>]*\bend="([^"]+)"[^>]*>(.*?)</p>',
-            ttml, re.S):
-        b = _body(m.group(3))
-        if b:
-            cues.append((_ttml_ts_to_ms(m.group(1)), _ttml_ts_to_ms(m.group(2)), b))
-    if not cues:
-        for m in re.finditer(
-                r'<p\b[^>]*\bbegin="([^"]+)"[^>]*\bdur="([^"]+)"[^>]*>(.*?)</p>',
-                ttml, re.S):
-            b = _body(m.group(3))
-            if b:
-                t0 = _ttml_ts_to_ms(m.group(1))
-                cues.append((t0, t0 + _ttml_ts_to_ms(m.group(2)), b))
+    def _attr(attrs, name):
+        m = re.search(r'\b%s="([^"]+)"' % name, attrs)
+        return m.group(1) if m else ""
+
+    for m in re.finditer(r'<p\b([^>]*)>(.*?)</p>', ttml, re.S):
+        attrs, body = m.group(1), m.group(2)
+        begin = _attr(attrs, "begin")
+        if not begin:
+            continue
+        end = _attr(attrs, "end")
+        if end:
+            t0, t1 = _ttml_ts_to_ms(begin), _ttml_ts_to_ms(end)
+        else:
+            dur = _attr(attrs, "dur")
+            if not dur:
+                continue
+            t0 = _ttml_ts_to_ms(begin)
+            t1 = t0 + _ttml_ts_to_ms(dur)
+        text = _body(body)
+        if text:
+            cues.append((t0, t1, text))
     if not cues:
         return ""
     return "\n".join("%d\n%s --> %s\n%s\n"
