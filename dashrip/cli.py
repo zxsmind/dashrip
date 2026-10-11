@@ -19,6 +19,7 @@ import json
 import os
 import random
 import re
+import requests
 import shutil
 import subprocess
 import sys
@@ -97,7 +98,7 @@ def load_catalog(cfg):
     hdrs = K._cms_headers(cfg)
     for rt in ["home"] + ["genre/" + g for g in GENRES]:
         try:
-            r = requests_get(cfg, K.CMS_BASE + "/cms/routes/" + rt +
+            r = requests.get(K.CMS_BASE + "/cms/routes/" + rt +
                              "?include=default&decorators=badges",
                              headers=hdrs, timeout=60)
             if r.status_code == 200:
@@ -115,11 +116,6 @@ def load_catalog(cfg):
         json.dump(names, open(p, "w", encoding="utf-8"), indent=1)
         print("  index: %d shows" % len(names))
     return names
-
-
-def requests_get(cfg, url, **kw):
-    import requests
-    return requests.get(url, **kw)
 
 
 def find_show(cfg, query):
@@ -703,16 +699,26 @@ def _pip_install(pkg):
     subprocess.run([sys.executable, "-m", "pip", "install", pkg], check=False)
 
 
-def _ask_tool(label, key, arg_check):
-    cur = C.get(C.load(), key, "")
-    prompt = "%s [%s]: " % (label, cur or "ffmpeg")
-    raw = input(prompt).strip()
+def _tool_runs(exe, version_arg):
+    """True if the tool starts and exits cleanly for its version argument."""
+    try:
+        p = subprocess.run([exe, version_arg], capture_output=True, timeout=20)
+    except Exception:
+        return False
+    return p.returncode == 0
+
+
+def _ask_tool(cfg, label, key, version_arg):
+    """Prompt for an external tool, verify it runs, and store its path."""
+    cur = C.get(cfg, key, "")
+    raw = input("%s [%s]: " % (label, cur or key)).strip()
     val = raw or cur
-    if val and C.resolve_tool(val):
-        C.set(cfg_global, key, val)
-        print("  %s: %s" % (key, C.resolve_tool(val)))
+    exe = C.resolve_tool(val) if val else None
+    if exe and _tool_runs(exe, version_arg):
+        C.set(cfg, key, val)
+        print("  %s: %s" % (key, exe))
         return True
-    print("  not found; you can set it later in %s" % C.path())
+    print("  not found or not runnable; set it later in %s" % C.path())
     return False
 
 
@@ -736,9 +742,9 @@ def cmd_init(args):
             if ask_yn("  %s is missing. Install it now? (pip)" % pkg, True):
                 _pip_install(pkg)
 
-    _ask_tool("ffmpeg path", "ffmpeg", "-version")
-    _ask_tool("ffprobe path", "ffprobe", "-version")
-    _ask_tool("shaka-packager path", "shaka", "--version")
+    _ask_tool(cfg_global, "ffmpeg path", "ffmpeg", "-version")
+    _ask_tool(cfg_global, "ffprobe path", "ffprobe", "-version")
+    _ask_tool(cfg_global, "shaka-packager path", "shaka", "--version")
 
     while True:
         wvd = input("Widevine device file (.wvd) path: ").strip()
@@ -1236,8 +1242,8 @@ def build_parser():
     pm = sub.add_parser("max", help="rip HBO Max content")
     pm.add_argument("queries", nargs="*",
                     help="URLs, titles or UUIDs (blank = interactive)")
-    pm.add_argument("--audio", default="", help="audio langs, e.g. tr,en")
-    pm.add_argument("--subs", default="", help="subtitle langs, e.g. tr,en")
+    pm.add_argument("--audio", default="", help="audio langs, e.g. en,de")
+    pm.add_argument("--subs", default="", help="subtitle langs, e.g. en,de")
     pm.add_argument("--embed", default="", help="1 = embed, 2 = sidecar files")
     pm.add_argument("--poster", default="",
                     help="poster policy: yes/no (blank = ask)")
