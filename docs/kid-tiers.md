@@ -51,7 +51,7 @@ representations' KIDs (`0102`/`0103` variants) yielded zero CEKs from the
 license, while the 720p representation's KID yielded a real 16-byte CEK.
 
 > Note: some public reports claim these platforms cap L3 at 480p. In our
-> measurements (TR region, EMEA edge) the L3 ceiling is **720p**. The
+> measurements (EMEA edge) the L3 ceiling is **720p**. The
 > ceiling can differ by region/account, so always verify what the license
 > actually returns for your case.
 
