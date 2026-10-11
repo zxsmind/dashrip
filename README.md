@@ -140,6 +140,9 @@ config; otherwise the keys come from the pasted command.
 MPD urls expire after about 30 minutes; recapture for another run.
 
 dashrip then downloads, decrypts, verifies, files, and records the result.
+Optional `extra_audio` in the config (a list of language codes, empty by
+default): for each code, a matching audio track that was not the selected
+one is also embedded as an extra track (no re-encode).
 See [docs/platform-notes.md](docs/platform-notes.md).
 
 ## How it works

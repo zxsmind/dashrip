@@ -18,6 +18,9 @@ outdir              str  default output directory; the standard ``Movies/``
                          and ``Series/`` trees are created underneath it
                          (empty = current directory)
 bwlimit_kbps        int  download speed cap in kbit/s (0 = unlimited)
+extra_audio         list audio track language codes (ISO 639-1 / BCP-47)
+                     to embed as extra tracks in the Prime flow, in
+                     addition to the selected one (empty = none)
 playback            dict template of the platform *playback-info* request,
                      captured once from the user's browser (HAR export):
       url                playback endpoint URL
@@ -73,6 +76,7 @@ def _defaults() -> dict:
         "shaka": "shaka-packager",
         "outdir": "",
         "bwlimit_kbps": 0,
+        "extra_audio": [],
         "playback": {
             "url": "",
             "headers": {},

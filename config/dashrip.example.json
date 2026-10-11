@@ -5,6 +5,7 @@
     "x-device-info": "<from your HAR: x-device-info header>"
   },
   "cookie": "st=<your JWT token>",
+  "extra_audio": [],
   "ffprobe": "ffprobe",
   "ffmpeg": "ffmpeg",
   "outdir": "",

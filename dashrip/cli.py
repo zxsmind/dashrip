@@ -301,7 +301,7 @@ def probe_tracks(cfg, edit_id):
 def _resolve_audio_policy(policy, available, original_hint=""):
     """Resolve a configured audio policy to concrete available codes.
 
-    The policy may be a list (e.g. ["orig", "tr"]), a comma string,
+    The policy may be a list (e.g. ["orig", "de"]), a comma string,
     "all"/"a", or "none"/"n".  The 'orig' pseudo-code resolves to the
     content's original language.  Returns a list of available codes,
     None for "all", or [] for "none".
@@ -897,10 +897,13 @@ def _probe_prime_mpd(cfg, url, headers):
     return sorted(set(vids)), sorted(set(auds))
 
 
-def _add_prime_dub(cfg, mpd_url, headers, keys, tr_lang, mkv, work):
-    """Download a dub track from the Prime MPD, decrypt it, and remux it
-    into the existing MKV as an extra audio track (no re-encode).
-    Returns the new MKV path, or None if it could not be added."""
+def _add_prime_dub(cfg, mpd_url, headers, keys, lang, mkv, work, audio_idx):
+    """Download an extra audio track from the Prime MPD, decrypt it, and
+    remux it into the existing MKV as an extra audio track (no
+    re-encode).  ``lang`` is the target language code (ISO 639-1 or
+    BCP-47); ``audio_idx`` is the 0-based audio-stream index the new
+    track will have in the resulting MKV.  Returns the new MKV path,
+    or None if it could not be added."""
     import requests
     hdrs = {"User-Agent": K.UA,
             "Origin": "https://www.primevideo.com",
@@ -914,37 +917,42 @@ def _add_prime_dub(cfg, mpd_url, headers, keys, tr_lang, mkv, work):
         r.raise_for_status()
         parsed = K.parse_mpd(r.text)
     except Exception as e:
-        log("  dub %s: cannot fetch/parse MPD (%s); skipped" % (tr_lang, e))
+        log("  extra audio %s: cannot fetch/parse MPD (%s); skipped"
+            % (lang, e))
         return None
-    tr_path = None
+    track, rel = None, None
+    want = str(lang).lower().split("-")[0]
     for lg, p in parsed["audio"].items():
-        if lg.lower().split("-")[0] == "tr":
-            tr_path, tr_lang = p, lg
+        if lg.lower().split("-")[0] == want:
+            track, rel = lg, p
             break
-    if not tr_path:
-        log("  dub %s: not in the MPD; skipped" % tr_lang)
+    if not track:
+        log("  extra audio %s: not in the MPD; skipped" % lang)
         return None
     base = K.cdn_base(mpd_url)
     max_bps = int((cfg.get("bwlimit_kbps") or 0) * 1000 // 8)
-    src = os.path.join(work, "dub_%s.mp4" % tr_lang)
-    dec = os.path.join(work, "dub_%s.dec" % tr_lang)
+    tag = track.split("-")[0][:3] or "und"
+    src = os.path.join(work, "dub_%s.mp4" % tag)
+    dec = os.path.join(work, "dub_%s.dec" % tag)
     try:
-        K.dl(cfg, base + tr_path, src, max_bps)
+        K.dl(cfg, base + rel, src, max_bps)
         K.shaka_decrypt(cfg, src, dec, "audio", keys)
     except Exception as e:
-        log("  dub %s: download/decrypt failed (%s); skipped" % (tr_lang, e))
+        log("  extra audio %s: download/decrypt failed (%s); skipped"
+            % (lang, e))
         return None
     out = os.path.join(work, "with_dub.mkv")
     ffmpeg = C.resolve_tool(cfg.get("ffmpeg") or "ffmpeg") or "ffmpeg"
     r2 = subprocess.run([ffmpeg, "-y", "-i", mkv, "-i", dec,
                          "-map", "0", "-map", "1:0", "-c", "copy",
-                         "-metadata:s:a:1", "language=tr", out],
+                         "-metadata:s:a:%d" % audio_idx,
+                         "language=%s" % tag, out],
                         cwd=work, stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL)
     if r2.returncode == 0 and os.path.exists(out):
         return out
-    log("  dub %s: remux failed (ffmpeg exit %d); skipped"
-        % (tr_lang, r2.returncode))
+    log("  extra audio %s: remux failed (ffmpeg exit %d); skipped"
+        % (lang, r2.returncode))
     return None
 
 
@@ -1051,13 +1059,22 @@ def cmd_prime(args):
         chosen_audio = K.resolve_original_lang(auds, original_hint)
     if chosen_audio:
         extra += ["-sa", "lang=%s:for=best" % chosen_audio]
-    tr_lang = None
+    extra_audio = []
+    extra_cfg = cfg.get("extra_audio") or []
+    if isinstance(extra_cfg, str):
+        extra_cfg = [x.strip() for x in extra_cfg.split(",") if x.strip()]
+    _seen = set()
     if auds and chosen_audio:
-        for x in auds:
-            if x.lower().split("-")[0] == "tr" \
-                    and x.lower() != chosen_audio.lower():
-                tr_lang = x
-                break
+        for code in extra_cfg:
+            want = str(code).strip().lower().split("-")[0]
+            if not want or want in _seen:
+                continue
+            for x in auds:
+                if x.lower().split("-")[0] == want \
+                        and x.lower() != chosen_audio.lower():
+                    _seen.add(want)
+                    extra_audio.append(x)
+                    break
 
     sel_subs = []
     if har_subs:
@@ -1134,14 +1151,14 @@ def cmd_prime(args):
                 log("  subtitle remux failed (ffmpeg exit %d); "
                     "delivering without subtitles" % r2.returncode)
 
-    tr_added = False
-    if tr_lang:
-        dub_mkv = _add_prime_dub(cfg, mpd_url, headers, keys, tr_lang, mkv,
-                                 run_dir)
+    extra_added = []
+    for i, code in enumerate(extra_audio):
+        dub_mkv = _add_prime_dub(cfg, mpd_url, headers, keys, code, mkv,
+                                 run_dir, 1 + i)
         if dub_mkv:
             mkv = dub_mkv
-            tr_added = True
-            log("  dub %s embedded" % tr_lang)
+            extra_added.append(code)
+            log("  extra audio %s embedded" % code)
 
     info = K.probe(cfg, mkv)
     dur = float(info.get("format", {}).get("duration") or 0)
@@ -1179,8 +1196,8 @@ def cmd_prime(args):
     audio_list = []
     if chosen_audio:
         audio_list.append((chosen_audio, ""))
-    if tr_added:
-        audio_list.append((tr_lang, ""))
+    for code in extra_added:
+        audio_list.append((code, ""))
     shutil.move(mkv, final)
     S.manifest_append(outdir, S.make_entry(
         outdir, title, v, final, {"video_wh": ""}, info,
