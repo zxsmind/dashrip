@@ -42,16 +42,16 @@ import shutil
 
 __all__ = [
     "CONFIG_NAME",
+    "cookie_expiry",
+    "cookie_token",
+    "get",
     "load",
-    "save",
     "path",
     "repo_root",
-    "get",
+    "resolve_tool",
+    "save",
     "set",
     "validate",
-    "cookie_token",
-    "cookie_expiry",
-    "resolve_tool",
 ]
 
 CONFIG_NAME = "dashrip.json"
@@ -68,6 +68,7 @@ def path() -> str:
 
 
 def _defaults() -> dict:
+    """Built-in configuration defaults."""
     return {
         "wvd": "",
         "cookie": "",
@@ -93,7 +94,7 @@ def load(path_: str | None = None) -> dict:
     cfg = _defaults()
     p = path_ or path()
     if os.path.isfile(p):
-        with open(p, "r", encoding="utf-8") as fh:
+        with open(p, encoding="utf-8") as fh:
             data = json.load(fh)
         for key, val in data.items():
             if key in ("playback", "defaults") and isinstance(val, dict):
@@ -182,7 +183,7 @@ def validate(cfg: dict) -> list[str]:
     if not cfg.get("wvd"):
         problems.append("wvd: not set")
     elif not os.path.isfile(cfg["wvd"]):
-        problems.append("wvd: file not found: %s" % cfg["wvd"])
+        problems.append("wvd: file not found: {}".format(cfg["wvd"]))
     if not cfg.get("cookie"):
         problems.append("cookie: not set")
     if not get(cfg, "playback.url"):
@@ -191,5 +192,5 @@ def validate(cfg: dict) -> list[str]:
         problems.append("playback.body: not set (run `dashrip init`)")
     for tool in ("ffmpeg", "ffprobe", "shaka"):
         if not resolve_tool(cfg.get(tool, "")):
-            problems.append("%s: not found (set the path or install it)" % tool)
+            problems.append(f"{tool}: not found (set the path or install it)")
     return problems

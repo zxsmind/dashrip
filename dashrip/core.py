@@ -15,6 +15,8 @@ import re
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+from contextlib import suppress
+from typing import Any
 
 import requests
 
@@ -28,7 +30,8 @@ WV_SYSTEM_ID = "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"
 M = '{urn:mpeg:dash:schema:mpd:2011}'
 
 
-def log(msg):
+def log(msg: str) -> None:
+    """Print a message with the dashrip prefix."""
     print("[dashrip] " + msg, flush=True)
 
 
@@ -36,7 +39,7 @@ def log(msg):
 # CMS (catalog)
 # --------------------------------------------------------------------------
 
-def _cms_headers(cfg_obj):
+def _cms_headers(cfg_obj: dict) -> dict:
     """Headers for CMS requests: the cookie plus the capture headers that
     the user's browser sent (x-disco-*, x-device-info, ...). The cookie is
     the only mandatory part; capture headers are optional metadata."""
@@ -54,15 +57,14 @@ def _cms_headers(cfg_obj):
     return h
 
 
-def resolve(cfg_obj, show_id):
+def resolve(cfg_obj: dict, show_id: str) -> tuple[dict | None, list]:
     """Fetch a show/film page. Returns (show_meta, videos).
 
     show_meta: the item dict matching show_id (may be None).
     videos:    list of dicts {editId, vid, name, season, episode,
               duration, airDate, desc}; trailers/previews are skipped.
     """
-    url = "%s/cms/routes/show/%s?include=default&decorators=badges" % (
-        CMS_BASE, show_id)
+    url = f"{CMS_BASE}/cms/routes/show/{show_id}?include=default&decorators=badges"
     r = requests.get(url, headers=_cms_headers(cfg_obj), timeout=30)
     r.raise_for_status()
     data = r.json()
@@ -101,14 +103,14 @@ def resolve(cfg_obj, show_id):
     return show_meta, videos
 
 
-def show_images(cfg_obj, show_id):
+def show_images(cfg_obj: dict, show_id: str) -> tuple[str | None, dict]:
     """Poster URLs from the CMS.
 
     Returns (show_poster_url, {video_item_id: episode_poster_url}).
     Show art prefers portrait cards with title; episode art prefers the
     tall centered card, then generic artwork.
     """
-    url = "%s/cms/routes/show/%s?include=default" % (CMS_BASE, show_id)
+    url = f"{CMS_BASE}/cms/routes/show/{show_id}?include=default"
     r = requests.get(url, headers=_cms_headers(cfg_obj), timeout=30)
     r.raise_for_status()
     data = r.json()
@@ -140,11 +142,11 @@ def show_images(cfg_obj, show_id):
     return show_poster, ep_posters
 
 
-def fetch_image(cfg_obj, url, dest):
+def fetch_image(cfg_obj: dict, url: str, dest: str) -> bool:
     """Download a poster; skip if already present and non-empty."""
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
         return False
-    last = None
+    last: Exception | None = None
     for attempt in range(3):
         try:
             r = requests.get(url, headers={"User-Agent": UA}, timeout=60)
@@ -155,14 +157,16 @@ def fetch_image(cfg_obj, url, dest):
         except Exception as ex:
             last = ex
             time.sleep(2 * (attempt + 1))
-    raise last
+    if last is not None:
+        raise last
+    raise RuntimeError(f"image download failed: {url}")
 
 
 # --------------------------------------------------------------------------
 # Playback / manifest / keys
 # --------------------------------------------------------------------------
 
-def playback(cfg_obj, edit_id):
+def playback(cfg_obj: dict, edit_id: str) -> tuple[str, str, str | None]:
     """POST the configured playbackInfo template with this edit id.
 
     The template (url, headers, body) was captured from the user's browser
@@ -181,11 +185,11 @@ def playback(cfg_obj, edit_id):
         # fall back to replacing the last quoted 8-4-4-4-12 uuid in the body
         uuids = list(re.finditer(
             r'"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"',
-            body, re.I))
+            body, re.IGNORECASE))
         if not uuids:
             raise RuntimeError("cannot locate edit id in playback body")
         m = uuids[-1]
-        body = body[:m.start()] + '"%s"' % edit_id + body[m.end():]
+        body = body[:m.start()] + f'"{edit_id}"' + body[m.end():]
     headers = {"User-Agent": UA, "Origin": ORIGIN,
                "Referer": ORIGIN + "/", "Content-Type": "application/json"}
     for k, v in (cfg.get(cfg_obj, "playback.headers") or {}).items():
@@ -205,7 +209,8 @@ def playback(cfg_obj, edit_id):
     return manifest, lic, cert
 
 
-def fetch_mpd(cfg_obj, mpd_url):
+def fetch_mpd(cfg_obj: dict, mpd_url: str) -> str:
+    """Download the MPD document as text."""
     h = {"User-Agent": UA, "Origin": ORIGIN, "Referer": ORIGIN + "/"}
     cookie = cfg.get(cfg_obj, "cookie")
     if cookie:
@@ -215,14 +220,14 @@ def fetch_mpd(cfg_obj, mpd_url):
     return r.text
 
 
-def cdn_base(mpd_url):
+def cdn_base(mpd_url: str) -> str:
     """CDN base URL for relative segment paths: strip the trailing path
     element (and query) from the manifest URL."""
     u = mpd_url.split("?")[0]
     return u.rsplit("/", 1)[0] + "/"
 
 
-def _xsd_duration(s):
+def _xsd_duration(s: str) -> float:
     """Parse an XMLSchema/ISO-8601 duration (PT22M18.647S, PT1H2M, P1DT2H)."""
     m = re.match(r'^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?'
                  r'(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$',
@@ -236,7 +241,8 @@ def _xsd_duration(s):
     return days * 86400 + hours * 3600 + mins * 60 + secs
 
 
-def resolve_original_lang(audio_langs, original_hint=""):
+def resolve_original_lang(audio_langs: list,
+                         original_hint: str = "") -> str | None:
     """Resolve the 'orig' pseudo-code to a concrete audio language code.
 
     original_hint is the platform-designated original track language (e.g.
@@ -258,21 +264,12 @@ def resolve_original_lang(audio_langs, original_hint=""):
     return langs[0]
 
 
-def parse_mpd(mpd_xml):
-    """Parse the DASH manifest.
-
-    Content periods are those whose video representations carry relative
-    BaseURLs (the platform serves one complete file per track; ad/bumper
-    periods use explicit external base urls). Parsed with ElementTree using
-    the real MPD element casing (<BaseURL>) and the cenc-namespaced <pssh>.
-
-    Returns dict with video_base/video_id/video_wh, audio {lang: rel_path},
-    subs [{lang, base, template, nums}], and the Widevine PSSH bytes.
-    """
-    root = ET.fromstring(mpd_xml)
-    periods = root.findall(M + 'Period')
+def _content_periods(root: ET.Element) -> list:
+    """Pick the content periods: those whose video representations carry
+    relative BaseURLs (the platform serves one complete file per track;
+    ad/bumper periods use explicit external base urls)."""
     content = []
-    for p in periods:
+    for p in root.findall(M + 'Period'):
         vrel = False
         has_audio = False
         for as_ in p.findall(M + 'AdaptationSet'):
@@ -281,15 +278,24 @@ def parse_mpd(mpd_xml):
                 has_audio = True
             if ct == 'video':
                 for rep in as_.findall(M + 'Representation'):
-                    bu = rep.find(M + 'BaseURL')
-                    bu = (bu.text or '').strip() if bu is not None else ''
+                    bu = _rel_base(rep)
                     if bu and not bu.startswith('http'):
                         vrel = True
         if vrel and has_audio:
             content.append(p)
     if not content:
         raise RuntimeError('no content period found in MPD')
+    return content
 
+
+def _rel_base(node: ET.Element) -> str:
+    """Relative BaseURL text of a node, or '' when absent or absolute."""
+    bu = node.find(M + 'BaseURL')
+    return (bu.text or '').strip() if bu is not None else ''
+
+
+def _best_video(content: list) -> tuple[int, int, str, str | None]:
+    """Largest content video representation as (width, height, base, id)."""
     best = None
     for p in content:
         for as_ in p.findall(M + 'AdaptationSet'):
@@ -298,16 +304,19 @@ def parse_mpd(mpd_xml):
             for rep in as_.findall(M + 'Representation'):
                 w = int(rep.get('width') or 0)
                 h = int(rep.get('height') or 0)
-                bu = rep.find(M + 'BaseURL')
-                bu = (bu.text or '').strip() if bu is not None else ''
+                bu = _rel_base(rep)
                 if not bu or bu.startswith('http'):
                     continue
                 if best is None or w * h > best[0]:
                     best = (w * h, w, h, bu, rep.get('id'))
     if not best:
         raise RuntimeError('no content video rep')
-    v_area, v_w, v_h, v_bu, v_id = best
+    _area, v_w, v_h, v_bu, v_id = best
+    return v_w, v_h, v_bu, v_id
 
+
+def _collect_audio(content: list) -> dict:
+    """First relative BaseURL per audio language."""
     audio = {}
     for p in content:
         for as_ in p.findall(M + 'AdaptationSet'):
@@ -317,14 +326,18 @@ def parse_mpd(mpd_xml):
             rep = as_.find(M + 'Representation')
             if rep is None:
                 continue
-            bu = rep.find(M + 'BaseURL')
-            bu = (bu.text or '').strip() if bu is not None else ''
+            bu = _rel_base(rep)
             if not bu or bu.startswith('http'):
                 continue
             if lg not in audio:
                 audio[lg] = bu
+    return audio
 
-    subs = {}
+
+def _collect_subs(content: list) -> dict:
+    """Subtitle segment templates keyed by (language, base); each track
+    carries its sorted list of segment numbers."""
+    subs: dict = {}
     for p in content:
         for as_ in p.findall(M + 'AdaptationSet'):
             if as_.get('contentType') != 'text':
@@ -344,30 +357,57 @@ def parse_mpd(mpd_xml):
             tr['nums'].append(int(st.get('startNumber') or 1))
     for tr in subs.values():
         tr['nums'] = sorted(set(tr['nums']))
+    return subs
 
-    pssh_b64 = None
+
+def _find_pssh(root: ET.Element) -> str:
+    """Base64 Widevine PSSH from the cenc-namespaced ContentProtection."""
     for cp in root.iter():
         if (cp.get('schemeIdUri') or '').lower().endswith(WV_SYSTEM_ID):
             el = cp.find('{urn:mpeg:cenc:2013}pssh')
             if el is not None and el.text:
-                pssh_b64 = el.text.strip()
-                break
-    if not pssh_b64:
-        raise RuntimeError('Widevine PSSH not found')
+                text = el.text.strip()
+                if text:
+                    return text
+    raise RuntimeError('Widevine PSSH not found')
 
-    mpd_dur = 0
+
+def _mpd_duration(root: ET.Element) -> float:
+    """Manifest duration in seconds: the duration attribute, or the
+    parsed mediaPresentationDuration when the attribute is absent."""
     d = root.get('duration')
     if d:
         try:
-            mpd_dur = float(d)
+            dur = float(d)
         except ValueError:
-            mpd_dur = 0
-    if not mpd_dur:
-        mpd_dur = _xsd_duration(root.get('mediaPresentationDuration') or '')
+            dur = 0
+        if dur:
+            return dur
+    return _xsd_duration(root.get('mediaPresentationDuration') or '')
+
+
+def parse_mpd(mpd_xml: str) -> dict:
+    """Parse the DASH manifest.
+
+    Content periods are selected by relative video BaseURLs, the widest
+    video representation wins, and audio/subtitle tracks come from the
+    adaptation sets of those periods. Parsed with ElementTree using the
+    real MPD element casing (<BaseURL>) and the cenc-namespaced <pssh>.
+
+    Returns dict with video_base/video_id/video_wh, audio {lang: rel_path},
+    subs [{lang, base, template, nums}], and the Widevine PSSH bytes.
+    """
+    root = ET.fromstring(mpd_xml)
+    content = _content_periods(root)
+    v_w, v_h, v_bu, v_id = _best_video(content)
+    audio = _collect_audio(content)
+    subs = _collect_subs(content)
+    pssh_b64 = _find_pssh(root)
+    mpd_dur = _mpd_duration(root)
     return {
         'video_base': v_bu,
         'video_id': v_id,
-        'video_wh': '%dx%d' % (v_w, v_h),
+        'video_wh': f'{v_w}x{v_h}',
         'audio': audio,
         'subs': list(subs.values()),
         'pssh': base64.b64decode(pssh_b64),
@@ -375,22 +415,22 @@ def parse_mpd(mpd_xml):
     }
 
 
-def get_keys(cfg_obj, pssh, service_cert, lic_url):
+def get_keys(cfg_obj: dict, pssh: bytes, service_cert: str | None, lic_url: str) -> dict:
     """Run the Widevine exchange with the configured device file.
 
     Loads the .wvd device, opens a session, sets the (dynamic) service
     certificate, generates the challenge, POSTs it to the license url and
     returns {kid_hex: key_hex}.
     """
-    from pywidevine.device import Device
     from pywidevine.cdm import Cdm
+    from pywidevine.device import Device
     from pywidevine.pssh import PSSH
 
     dev = Device.load(cfg_obj["wvd"])
     cdm = Cdm.from_device(dev)
     sid = cdm.open()
     try:
-        cert = service_cert
+        cert: str | bytes | None = service_cert
         if not cert:
             sc = cfg.get(cfg_obj, "service_cert")
             if sc and os.path.isfile(sc):
@@ -407,7 +447,7 @@ def get_keys(cfg_obj, pssh, service_cert, lic_url):
             h["Cookie"] = cookie
         r = requests.post(lic_url, headers=h, data=challenge, timeout=60)
         if r.status_code != 200:
-            raise RuntimeError("license request failed: HTTP %s" % r.status_code)
+            raise RuntimeError(f"license request failed: HTTP {r.status_code}")
         # parse_license stores the keys in the session and returns None
         # (pywidevine >= 1.9); read them back with cdm.get_keys.
         cdm.parse_license(sid, r.content)
@@ -419,7 +459,7 @@ def get_keys(cfg_obj, pssh, service_cert, lic_url):
         cdm.close(sid)
 
 
-def keys_arg(keys):
+def keys_arg(keys: dict) -> str:
     """Build shaka-packager --keys argument.
 
     Widevine KID byte[1] is the key tier; the same 14-byte key body can
@@ -438,7 +478,7 @@ def keys_arg(keys):
             continue
         for tier in (0x00, 0x01, 0x02, 0x03, 0x04, 0x05):
             expanded.setdefault((b'\x01' + bytes([tier]) + body).hex(), k)
-    parts = ["label=wv%d:key_id=%s:key=%s" % (i, kid, k)
+    parts = [f"label=wv{i}:key_id={kid}:key={k}"
              for i, (kid, k) in enumerate(expanded.items())]
     return ",".join(parts)
 
@@ -447,7 +487,7 @@ def keys_arg(keys):
 # Download / decrypt / mux helpers
 # --------------------------------------------------------------------------
 
-def dl(cfg_obj, url, path, max_bps=0):
+def dl(cfg_obj: dict, url: str, path: str, max_bps: int = 0) -> tuple[int, int | None]:
     """Download with resume (.part), Range support and throttling.
 
     Transient failures (CDN edge hiccups, dropped streams) are retried
@@ -465,7 +505,7 @@ def dl(cfg_obj, url, path, max_bps=0):
         pos = os.path.getsize(part) if os.path.exists(part) else 0
         hh = dict(h)
         if pos:
-            hh["Range"] = "bytes=%d-" % pos
+            hh["Range"] = f"bytes={pos}-"
         r = None
         try:
             r = requests.get(url, headers=hh, stream=True, timeout=60)
@@ -475,7 +515,7 @@ def dl(cfg_obj, url, path, max_bps=0):
                 os.remove(part)
                 continue
             if r.status_code not in (200, 206):
-                raise RuntimeError("HTTP %s" % r.status_code)
+                raise RuntimeError(f"HTTP {r.status_code}")
             if r.status_code == 200:
                 pos = 0
             cr = r.headers.get("Content-Range")
@@ -495,43 +535,42 @@ def dl(cfg_obj, url, path, max_bps=0):
                     if max_bps:
                         time.sleep(len(chunk) / max_bps)
                     if time.time() - last_log > 5:
-                        done_mb = done // (1 << 20)
-                        tot = " / %dMB" % (total // (1 << 20)) if total else ""
-                        log("  dl %s%s ... %d%%" % (
-                            os.path.basename(path)[:40], tot,
-                            done * 100 // total if total else -1))
+                        tot = f" / {total // (1 << 20)}MB" if total else ""
+                        log(f"  dl {os.path.basename(path)[:40]}{tot} ... "
+                            f"{done * 100 // total if total else -1}%")
                         last_log = time.time()
             r.close()
             break
         except Exception as ex:
             if r is not None:
-                try:
+                with suppress(Exception):
                     r.close()
-                except Exception:
-                    pass
             if attempt == 5:
                 raise RuntimeError(
-                    "download failed after 6 attempts: %s" % ex)
+                    f"download failed after 6 attempts: {ex}")
             wait = 3 + attempt * 2
-            log("  dl %s: %s -- retry %d/6 in %ds" % (
-                os.path.basename(path)[:40], ex, attempt + 1, wait))
+            log(f"  dl {os.path.basename(path)[:40]}: {ex} -- "
+                f"retry {attempt + 1}/6 in {wait}s")
             time.sleep(wait)
     os.replace(part, path)
     return os.path.getsize(path) - start_pos, total
 
 
-def shaka_decrypt(cfg_obj, inp, out, kind, keys):
+def shaka_decrypt(cfg_obj: dict, inp: str, out: str, kind: str, keys: dict) -> None:
     """Decrypt one DASH track with shaka-packager raw key decryption."""
     shaka = cfg.resolve_tool(cfg.get(cfg_obj, "shaka"))
-    cmd = [shaka, "input=%s,stream=%s,out=%s" % (inp, kind, out),
+    if not shaka:
+        raise RuntimeError("shaka-packager not found"
+                           " (set its path in the config)")
+    cmd = [shaka, f"input={inp},stream={kind},out={out}",
            "--enable_raw_key_decryption", "--keys=" + keys_arg(keys)]
     p = subprocess.run(cmd, capture_output=True)
     if p.returncode != 0:
-        raise RuntimeError("shaka decrypt failed (rc=%d): %s" % (
-            p.returncode, p.stderr.decode("utf-8", "replace")[-800:]))
+        raise RuntimeError(f"shaka decrypt failed (rc={p.returncode}): "
+                           f"{p.stderr.decode('utf-8', 'replace')[-800:]}")
 
 
-def merge_subs(cfg_obj, segs):
+def merge_subs(cfg_obj: dict, segs: list) -> dict:
     """Concatenate VTT segments.
 
     The platform emits segments with global 0-based cue timestamps, so no
@@ -540,7 +579,7 @@ def merge_subs(cfg_obj, segs):
     """
     out = {}
     for path, name in segs:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             txt = f.read()
         blocks = [b for b in txt.split("WEBVTT\n\n") if b.strip()]
         cues = []
@@ -555,29 +594,35 @@ def merge_subs(cfg_obj, segs):
                     lines = lines[1:]
                 cues.append("\n".join(lines))
         out[name] = "WEBVTT\n\n" + "\n\n".join(
-            "%d\n%s" % (i + 1, c) for i, c in enumerate(cues)) + "\n"
+            f"{i + 1}\n{c}" for i, c in enumerate(cues)) + "\n"
     return out
 
 
-def probe(cfg_obj, path):
+def probe(cfg_obj: dict, path: str) -> dict:
     """ffprobe summary: duration + codec list."""
     ffprobe = cfg.resolve_tool(cfg.get(cfg_obj, "ffprobe"))
+    if not ffprobe:
+        raise RuntimeError("ffprobe not found"
+                           " (set its path in the config)")
     p = subprocess.run(
         [ffprobe, "-v", "error", "-show_entries",
          "format=duration:stream=codec_type,codec_name,width,height",
          "-of", "json", path], capture_output=True)
     if p.returncode != 0:
-        raise RuntimeError("ffprobe failed: %s" % p.stderr.decode("utf-8", "replace"))
+        raise RuntimeError("ffprobe failed: {}".format(p.stderr.decode("utf-8", "replace")))
     return json.loads(p.stdout.decode("utf-8"))
 
 
-def mux(cfg_obj, out, vdec, aud, subfiles):
+def mux(cfg_obj: dict, out: str, vdec: str, aud: list, subfiles: list) -> None:
     """Mux video + audio + subs into an MKV (stream copy, no re-encode).
 
     aud and subfiles are lists of (lang, path). Languages get proper
     MKV tags so players can list/select them.
     """
     ffmpeg = cfg.resolve_tool(cfg.get(cfg_obj, "ffmpeg"))
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found"
+                           " (set its path in the config)")
     cmd = [ffmpeg, "-y", "-i", vdec]
     for _lg, ap in aud:
         cmd += ["-i", ap]
@@ -586,24 +631,27 @@ def mux(cfg_obj, out, vdec, aud, subfiles):
     cmd += ["-map", "0:v"]
     ai = 1
     for lg, _ap in aud:
-        cmd += ["-map", "%d:a" % ai, "-metadata:s:a:%d" % (ai - 1),
+        cmd += ["-map", f"{ai}:a", f"-metadata:s:a:{ai - 1}",
                 "language=" + (lg[:2] or "und")]
         ai += 1
     si = ai
     for lg, _vp in subfiles:
-        cmd += ["-map", "%d:s" % si, "-metadata:s:s:%d" % (si - ai),
+        cmd += ["-map", f"{si}:s", f"-metadata:s:s:{si - ai}",
                 "language=" + (lg[:2] or "und")]
         si += 1
     cmd += ["-c:v", "copy", "-c:a", "copy", "-c:s", "webvtt", out]
     p = subprocess.run(cmd, capture_output=True)
     if p.returncode != 0:
-        raise RuntimeError("ffmpeg mux failed (rc=%d): %s" % (
-            p.returncode, p.stderr.decode("utf-8", "replace")[-800:]))
+        raise RuntimeError(f"ffmpeg mux failed (rc={p.returncode}): "
+                           f"{p.stderr.decode('utf-8', 'replace')[-800:]}")
 
 
-def quick_decode(cfg_obj, path, seconds=15):
+def quick_decode(cfg_obj: dict, path: str, seconds: int = 15) -> bool:
     """Decode a few seconds and report whether any error came out."""
     ffmpeg = cfg.resolve_tool(cfg.get(cfg_obj, "ffmpeg"))
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found"
+                           " (set its path in the config)")
     r = subprocess.run(
         [ffmpeg, "-v", "error", "-t", str(seconds), "-i", path, "-f", "null", "-"],
         capture_output=True, text=True)
@@ -612,44 +660,45 @@ def quick_decode(cfg_obj, path, seconds=15):
 
 # ------------------------- Prime subtitles (HAR) -------------------------
 
-def fetch_ttml(url):
+def fetch_ttml(url: str) -> str:
     """Fetch a Prime timed-text (TTML) file. Returns text, or "" on failure."""
     try:
         r = requests.get(url, headers={"User-Agent": UA}, timeout=60)
         if r.status_code == 200 and r.text.strip():
             return r.text
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"ttml fetch failed ({e})")
     return ""
 
 
-def _ttml_ts_to_ms(ts):
+def _ttml_ts_to_ms(ts: str) -> int:
     """'HH:MM:SS.mmm' / 'MM:SS.mmm' / 'PT1H2M3.4S' -> milliseconds."""
     ts = ts.strip()
     if ts.startswith("PT"):
-        h = re.search(r'(\d+(?:\.\d+)?)H', ts)
-        m = re.search(r'(\d+(?:\.\d+)?)M', ts)
-        s = re.search(r'(\d+(?:\.\d+)?)S', ts)
-        return int((float(h.group(1) if h else 0) * 3600
-                    + float(m.group(1) if m else 0) * 60
-                    + float(s.group(1) if s else 0)) * 1000)
+        hm = re.search(r'(\d+(?:\.\d+)?)H', ts)
+        mm = re.search(r'(\d+(?:\.\d+)?)M', ts)
+        sm = re.search(r'(\d+(?:\.\d+)?)S', ts)
+        return int((float(hm.group(1) if hm else 0) * 3600
+                    + float(mm.group(1) if mm else 0) * 60
+                    + float(sm.group(1) if sm else 0)) * 1000)
     parts = ts.rstrip("Z").split(":")
     if len(parts) == 2:
-        parts = ["0"] + parts
+        parts = ["0", *parts]
     h, mnt, sec = parts
     base, _, frac = sec.partition(".")
     return (int(h) * 3600 + int(mnt) * 60 + int(base)) * 1000 + int((frac + "000")[:3])
 
 
-def _ms_to_srt_ts(ms):
+def _ms_to_srt_ts(ms: int) -> str:
+    """Clock timestamp for an SRT cue: HH:MM:SS,mmm."""
     h = ms // 3600000
     ms %= 3600000
     mnt = ms // 60000
     ms %= 60000
-    return "%02d:%02d:%02d,%03d" % (h, mnt, ms // 1000, ms % 1000)
+    return f"{h:02d}:{mnt:02d}:{ms // 1000:02d},{ms % 1000:03d}"
 
 
-def ttml_to_srt(ttml):
+def ttml_to_srt(ttml: str) -> str:
     """Convert Prime TTML (IMSC1) to SRT text. Returns "" if no cues found.
 
     Every ``<p>`` may use ``begin``/``end`` or ``begin``/``dur``; both are
@@ -666,10 +715,10 @@ def ttml_to_srt(ttml):
         return _html.unescape(body).strip()
 
     def _attr(attrs, name):
-        m = re.search(r'\b%s="([^"]+)"' % name, attrs)
+        m = re.search(rf'\b{name}="([^"]+)"', attrs)
         return m.group(1) if m else ""
 
-    for m in re.finditer(r'<p\b([^>]*)>(.*?)</p>', ttml, re.S):
+    for m in re.finditer(r'<p\b([^>]*)>(.*?)</p>', ttml, re.DOTALL):
         attrs, body = m.group(1), m.group(2)
         begin = _attr(attrs, "begin")
         if not begin:
@@ -688,44 +737,24 @@ def ttml_to_srt(ttml):
             cues.append((t0, t1, text))
     if not cues:
         return ""
-    return "\n".join("%d\n%s --> %s\n%s\n"
-                      % (n, _ms_to_srt_ts(b), _ms_to_srt_ts(e), txt)
-                      for n, (b, e, txt) in enumerate(cues, 1))
+    return "\n".join(f"{n}\n{_ms_to_srt_ts(b)} --> {_ms_to_srt_ts(e)}\n{txt}\n"
+                     for n, (b, e, txt) in enumerate(cues, 1))
 
 
-def parse_prime_har(har_path):
-    """Read a browser HAR capture of a Prime playback.
-
-    Extracts the subtitle tracks (timedTextUrls), the signed MPD URL with
-    the request headers that fetched it, the content id (titleId), and the
-    Widevine license exchange (challenge + license response). The exchange
-    lets dashrip derive the content keys locally, provided the capture was
-    made while the proxy ran in WVD mode with the configured device.
-
-    Returns a dict with keys: subs, mpd_url, mpd_headers, title_id,
-    challenge_b64, license_b64, error.
-    """
-    res = {"subs": [], "mpd_url": "", "mpd_headers": [], "title_id": "",
-           "original_lang": "", "challenge_b64": "", "license_b64": "",
-           "error": ""}
-    try:
-        with open(har_path, "r", encoding="utf-8") as f:
-            har = json.load(f)
-    except Exception as e:
-        res["error"] = "cannot read HAR: %r" % e
-        return res
-    entries = har.get("log", {}).get("entries", [])
+def _har_scan(entries: list, res: dict) -> None:
+    """Fill the first-wins fields of a parse_prime_har result from the HAR
+    entries: subtitle tracks, original audio language, the signed MPD
+    request with its headers, and the Widevine license exchange."""
     for entry in entries:
         req = entry.get("request", {}) or {}
         url = req.get("url", "")
         text = ((entry.get("response", {}).get("content", {}) or {})
                 .get("text")) or ""
         if "timedTextUrls" in text and not res["subs"]:
-            try:
+            body = None
+            with suppress(ValueError, TypeError):
                 body = json.loads(text)
-            except Exception:
-                pass
-            else:
+            if body is not None:
                 subs = (((body.get("timedTextUrls") or {}).get("result") or {})
                         .get("subtitleUrls") or [])
                 if subs:
@@ -745,21 +774,21 @@ def parse_prime_har(har_path):
                 v = (h.get("value") or "").strip()
                 if v and n.lower() in ("accept", "origin", "referer",
                                        "user-agent"):
-                    res["mpd_headers"].append("%s: %s" % (n, v))
+                    res["mpd_headers"].append(f"{n}: {v}")
         if "GetWidevineLicense" in url and not res["challenge_b64"]:
-            try:
+            with suppress(ValueError, TypeError, AttributeError):
                 pd = req.get("postData") or {}
                 res["challenge_b64"] = \
                     json.loads(pd.get("text") or "").get(
                         "licenseChallenge") or ""
-            except Exception:
-                pass
-            try:
+            with suppress(ValueError, TypeError, AttributeError):
                 res["license_b64"] = (((json.loads(text).get(
                     "widevineLicense") or {}).get("license")) or "")
-            except Exception:
-                pass
-    # content id: prefer the playback/license requests, then any entry
+
+
+def _har_title_id(entries: list) -> str:
+    """Content id from the HAR: playback/license requests win over any
+    other entry that carries one."""
     for pref in (True, False):
         for entry in entries:
             url = (entry.get("request", {}) or {}).get("url", "")
@@ -769,24 +798,49 @@ def parse_prime_har(har_path):
                 continue
             m = re.search(r"titleId=([A-Za-z0-9.\-]+)", url)
             if m:
-                res["title_id"] = m.group(1)
-                break
-        if res["title_id"]:
-            break
+                return m.group(1)
+    return ""
+
+
+def parse_prime_har(har_path: str) -> dict:
+    """Read a browser HAR capture of a Prime playback.
+
+    Extracts the subtitle tracks (timedTextUrls), the signed MPD URL with
+    the request headers that fetched it, the content id (titleId), and the
+    Widevine license exchange (challenge + license response). The exchange
+    lets dashrip derive the content keys locally, provided the capture was
+    made while the proxy ran in WVD mode with the configured device.
+
+    Returns a dict with keys: subs, mpd_url, mpd_headers, title_id,
+    challenge_b64, license_b64, error.
+    """
+    res = {"subs": [], "mpd_url": "", "mpd_headers": [], "title_id": "",
+           "original_lang": "", "challenge_b64": "", "license_b64": "",
+           "error": ""}
+    try:
+        with open(har_path, encoding="utf-8") as f:
+            har = json.load(f)
+    except Exception as e:
+        res["error"] = f"cannot read HAR: {e!r}"
+        return res
+    entries = har.get("log", {}).get("entries", [])
+    _har_scan(entries, res)
+    res["title_id"] = _har_title_id(entries)
     if not res["mpd_url"]:
         res["error"] = "no signed MPD request found in this HAR"
     elif not res["subs"]:
         res["error"] = "no timedTextUrls found in this HAR"
     return res
 
-def fetch_prime_meta(title_id):
+
+def fetch_prime_meta(title_id: str) -> dict:
     """Fetch title/year/poster for a Prime content id (GTI).
 
     Uses the public detail page; no authentication is required.
     Returns {"title", "year", "poster", "episode"} (empty on failure).
     """
-    res = {"title": "", "year": "", "poster": "", "episode": None}
-    url = "https://www.primevideo.com/detail/%s" % title_id
+    res: dict = {"title": "", "year": "", "poster": "", "episode": None}
+    url = f"https://www.primevideo.com/detail/{title_id}"
     try:
         r = requests.get(url, headers={"User-Agent": UA}, timeout=30,
                          allow_redirects=True)
@@ -813,7 +867,7 @@ def fetch_prime_meta(title_id):
     m = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', t)
     if m:
         res["poster"] = m.group(1)
-    ep = {}
+    ep: dict = {}
     m = re.search(r'"seasonNumber"\s*:\s*(\d+)', t)
     if m:
         ep["season"] = int(m.group(1))
@@ -828,7 +882,7 @@ def fetch_prime_meta(title_id):
     return res
 
 
-def prime_keys_from_har(har_path, wvd_path):
+def prime_keys_from_har(har_path: str, wvd_path: str) -> tuple[dict | None, str | None]:
     """Derive the content keys from a Prime HAR capture.
 
     The capture must have been made while the WidevineProxy ran in WVD
@@ -845,9 +899,9 @@ def prime_keys_from_har(har_path, wvd_path):
     if not h.get("challenge_b64") or not h.get("license_b64"):
         return None, ("no Widevine license exchange in this HAR; capture "
                       "while the proxy runs in WVD mode with this device")
-    from pywidevine.device import Device
     from pywidevine.cdm import Cdm
-    from pywidevine.license_protocol_pb2 import SignedMessage, License
+    from pywidevine.device import Device
+    from pywidevine.license_protocol_pb2 import License, SignedMessage
     try:
         sm = SignedMessage()
         sm.ParseFromString(base64.b64decode(h["challenge_b64"]))
@@ -859,26 +913,29 @@ def prime_keys_from_har(har_path, wvd_path):
         lic.ParseFromString(ls.msg)
         req_id = lic.id.request_id
     except Exception as e:
-        return None, "unparseable license exchange: %r" % e
+        return None, f"unparseable license exchange: {e!r}"
     enc_ctx = b"ENCRYPTION\x00" + inner + (16 * 8).to_bytes(4, "big")
     mac_ctx = b"AUTHENTICATION\x00" + inner + (32 * 8 * 2).to_bytes(4, "big")
     try:
         cdm = Cdm.from_device(Device.load(wvd_path))
     except Exception as e:
-        return None, "cannot load device: %r" % e
+        return None, f"cannot load device: {e!r}"
     sid = cdm.open()
     try:
-        cdm._Cdm__sessions[sid].context[req_id] = (enc_ctx, mac_ctx)
+        # pywidevine keeps the session context private; the challenge
+        # came from the capture, so the context is restored here.
+        sessions = getattr(cdm, "_Cdm__sessions")
+        sessions[sid].context[req_id] = (enc_ctx, mac_ctx)
         cdm.parse_license(sid, lic_bytes)
         keys = {}
         for k in cdm.get_keys(sid):
-            kid = k.kid
+            kid: Any = k.kid
             if not isinstance(kid, str):
-                h = getattr(kid, "hex", None)
-                kid = h() if callable(h) else h
+                hexfn = getattr(kid, "hex", None)
+                kid = hexfn() if callable(hexfn) else hexfn
                 if not isinstance(kid, str):
                     kid = str(kid).replace("-", "")
-            key = k.key
+            key: Any = k.key
             if not isinstance(key, str):
                 key = key.hex()
             keys[kid] = key
@@ -886,7 +943,7 @@ def prime_keys_from_har(har_path, wvd_path):
         return None, ("license was not issued for this device; capture "
                       "while the proxy runs in WVD mode using this .wvd")
     except Exception as e:
-        return None, "key extraction failed: %r" % e
+        return None, f"key extraction failed: {e!r}"
     finally:
         cdm.close(sid)
     if not keys:

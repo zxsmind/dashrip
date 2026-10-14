@@ -22,7 +22,6 @@ from dashrip import config as C
 from dashrip import core as K
 from dashrip import structure as S
 
-
 # ------------------------- output layout -------------------------
 
 def test_safe_dir_strips_invalid_characters():
@@ -73,7 +72,7 @@ def test_cookie_token_variants():
 def test_cookie_expiry_reads_exp():
     payload = base64.urlsafe_b64encode(
         json.dumps({"exp": 2000000000}).encode()).decode().rstrip("=")
-    token = "st=eyJhbGciOiJIUzI1NiJ9.%s.sig" % payload
+    token = f"st=eyJhbGciOiJIUzI1NiJ9.{payload}.sig"
     assert C.cookie_expiry(token) == 2000000000
 
 
@@ -125,7 +124,7 @@ def test_keys_arg_aliases_every_tier():
     key = "cd" * 16
     arg = K.keys_arg({kid: key})
     for tier in ("0100", "0102", "0105"):
-        assert "key_id=%s%s" % (tier, "ab" * 14) in arg
+        assert "key_id={}{}".format(tier, "ab" * 14) in arg
     # all-zero keys are the "no key for this tier" marker and are dropped
     assert K.keys_arg({kid: "0" * 32}) == ""
 
@@ -204,7 +203,7 @@ def test_parse_ep_spec():
     assert [v["editId"] for v in cli.parse_ep_spec("1-2", one_season)] == ["a", "b"]
     assert [v["editId"] for v in cli.parse_ep_spec("3", one_season)] == ["c"]
 
-    two_seasons = one_season + [{"season": 2, "episode": 1, "editId": "d"}]
+    two_seasons = [*one_season, {"season": 2, "episode": 1, "editId": "d"}]
     assert [v["editId"] for v in cli.parse_ep_spec("S02E01", two_seasons)] == ["d"]
 
 

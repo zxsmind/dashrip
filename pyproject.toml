@@ -1,0 +1,29 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".git", "__pycache__", ".ruff_cache"]
+
+[tool.ruff.lint]
+select = [
+    "E4",   # imports
+    "E5",   # line length
+    "E7",   # statements
+    "E9",   # runtime errors
+    "F",    # pyflakes
+    "I",    # import order
+    "UP",   # pyupgrade
+    "SIM",  # simplify
+    "C4",   # comprehensions
+    "FURB", # refurb modernizations
+    "RUF",  # ruff-specific
+    "S",    # security (bandit)
+]
+ignore = [
+    "S603",   # subprocess calls take static argument lists
+    "S311",   # random drives jitter and ordering, not secrets
+    "S314",   # xml.etree parses MPD documents from the CDN
+    "S324",   # sha1 fingerprints sync checkpoints, not credentials
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]

@@ -24,9 +24,14 @@ import shutil
 import time
 
 
+def log(msg: str) -> None:
+    """Print a message with the dashrip prefix."""
+    print(f"[dashrip] {msg}", flush=True)
+
+
 # ------------------------- small helpers -------------------------
 
-def safe_dir(name):
+def safe_dir(name: str) -> str:
     """Make a string safe for use as a directory/file name component.
 
     Filesystem-invalid characters (e.g. ':') become a space and runs of
@@ -38,57 +43,57 @@ def safe_dir(name):
     return s or 'untitled'
 
 
-def year_of(meta):
+def year_of(meta: dict | None) -> str:
     """Extract the 4-digit year from a CMS `premiereDate` (or similar)."""
     d = (meta or {}).get('premiereDate') or ''
     m = re.match(r'(\d{4})', d)
     return m.group(1) if m else ''
 
 
-def slug(title):
+def slug(title: str | None) -> str:
     """Dotted slug for file names: 'The Matrix' -> 'The.Matrix'."""
     return re.sub(r'[^\w.\-]+', '.', (title or '')).strip('.')
 
 
-def work_name(title, v):
+def work_name(title: str, v: dict) -> str:
     """Working file name (no quality suffix): 'Title' or 'Title.S01E02'."""
     t = slug(title)
     if v.get('season') is not None:
-        t += '.S%02dE%02d' % (v['season'] or 0, v['episode'] or 0)
+        t += f".S{v['season'] or 0:02d}E{v['episode'] or 0:02d}"
     return t
 
 
 # ------------------------- directory layout -------------------------
 
-def title_dir(outdir, title, meta, is_series):
+def title_dir(outdir: str, title: str, meta: dict | None, is_series: bool) -> str:
     """Top-level content folder (Movies/<Title> (Year) or Series/<Show>)."""
     if is_series:
         return os.path.join(outdir, 'Series', safe_dir(title))
     yr = year_of(meta)
     return os.path.join(outdir, 'Movies',
-                        safe_dir(title) + ((' (%s)' % yr) if yr else ''))
+                        safe_dir(title) + ((f' ({yr})') if yr else ''))
 
 
-def ep_dir(outdir, title, v, single_season):
+def ep_dir(outdir: str, title: str, v: dict, single_season: bool) -> str:
     """Per-episode folder under Series/<Show>/Season NN/Episode NN - <Name>."""
     seas = 1 if single_season else (v['season'] or 1)
     epn = v['episode'] or 0
-    epname = safe_dir(v.get('name') or '') or ('Episode %02d' % epn)
+    epname = safe_dir(v.get('name') or '') or f'Episode {epn:02d}'
     return os.path.join(outdir, 'Series', safe_dir(title),
-                        'Season %02d' % seas, 'Episode %02d - %s' % (epn, epname))
+                        f'Season {seas:02d}', f'Episode {epn:02d} - {epname}')
 
 
-def final_name(title, v, single_season):
+def final_name(title: str, v: dict, single_season: bool) -> str:
     """Final MKV file name for a movie or an episode."""
     if v.get('season') is None:
         return slug(title) + '.720p.mkv'
     seas = 1 if single_season else (v['season'] or 1)
     epn = v['episode'] or 0
-    epname = safe_dir(v.get('name') or '') or ('Episode %02d' % epn)
-    return 'S%02dE%02d - %s.720p.mkv' % (seas, epn, epname)
+    epname = safe_dir(v.get('name') or '') or f'Episode {epn:02d}'
+    return f'S{seas:02d}E{epn:02d} - {epname}.720p.mkv'
 
 
-def final_path(outdir, title, v, meta, single_season):
+def final_path(outdir: str, title: str, v: dict, meta: dict | None, single_season: bool) -> str:
     """Full destination path for the finished MKV (dir + name)."""
     if v.get('season') is None:
         d = title_dir(outdir, title, meta, False)
@@ -97,7 +102,8 @@ def final_path(outdir, title, v, meta, single_season):
     return os.path.join(d, final_name(title, v, single_season))
 
 
-def poster_dirs(outdir, title, v, meta, single_season):
+def poster_dirs(outdir: str, title: str, v: dict, meta: dict | None,
+                single_season: bool) -> tuple[str, str | None]:
     """Folders for artwork.
 
     Returns (content_dir, episode_dir_or_None).
@@ -113,7 +119,8 @@ def poster_dirs(outdir, title, v, meta, single_season):
 
 # ------------------------- hashing / manifest -------------------------
 
-def sha256_of(path):
+def sha256_of(path: str) -> str:
+    """Hex SHA-256 of a file, read in 1 MiB chunks."""
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         for chunk in iter(lambda: f.read(1 << 20), b''):
@@ -121,48 +128,53 @@ def sha256_of(path):
     return h.hexdigest()
 
 
-def manifest_path(outdir):
+def manifest_path(outdir: str) -> str:
+    """Path of the manifest file inside a library folder."""
     return os.path.join(outdir, 'dashrip_manifest.json')
 
 
-def manifest_append(outdir, entry):
+def manifest_append(outdir: str, entry: dict) -> None:
     """Add (or replace-by-file) an entry in the library manifest."""
     os.makedirs(outdir, exist_ok=True)
     mf = manifest_path(outdir)
     data = []
     if os.path.exists(mf):
         try:
-            data = json.load(open(mf, encoding='utf-8'))
-        except Exception:
+            with open(mf, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            log(f"manifest unreadable ({e}), starting from an empty list")
             data = []
     data = [e for e in data if e.get('file') != entry.get('file')]
     data.append(entry)
-    json.dump(data, open(mf, 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+    with open(mf, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=1, ensure_ascii=False)
 
 
-def manifest_load(outdir):
+def manifest_load(outdir: str) -> list:
+    """Manifest entries of a folder; [] when absent or unreadable."""
     mf = manifest_path(outdir)
     if not os.path.exists(mf):
         return []
     try:
-        return json.load(open(mf, encoding='utf-8'))
-    except Exception:
+        with open(mf, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"manifest unreadable ({e}), treating it as empty")
         return []
 
 
 # ------------------------- cleanup -------------------------
 
-def cleanup(dirp):
+def cleanup(dirp: str) -> None:
     """Remove a working directory (transient, already-verified). Never
     touches the final library output."""
-    try:
-        shutil.rmtree(dirp, ignore_errors=True)
-    except Exception:
-        pass
+    shutil.rmtree(dirp, ignore_errors=True)
 
 
-def make_entry(outdir, title, v, final, parsed, info, aud, subfiles, sidecars,
-               single_season=False):
+def make_entry(outdir: str, title: str, v: dict, final: str, parsed: dict,
+               info: dict, aud: list, subfiles: list, sidecars: list,
+               single_season: bool = False) -> dict:
     """Build a manifest entry for a finished item."""
     seas = None if v.get('season') is None else (1 if single_season else (v['season'] or 1))
     epn = v.get('episode')
